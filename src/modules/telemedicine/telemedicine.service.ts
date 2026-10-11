@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { ApiError } from '../../utils/ApiError.js';
 import { PatientModel } from '../patient/patient.model.js';
 import { Staff } from '../staff/staff.model.js';
 import { ProviderScheduleModel } from '../appointment/appointment.model.js';
@@ -459,7 +460,12 @@ export class TelemedicineService {
     );
     const registrationNumber = verifiedRegistration?.registrationNumber?.trim();
     if (!registrationNumber) {
-      throw new Error('The assigned doctor needs a verified, unexpired professional registration on their staff profile before a prescription can be issued.');
+      // This is a staff-profile/credential validation issue, not an internal
+      // server failure. Return a 422 so the frontend can show a useful message.
+      throw new ApiError(
+        422,
+        'Prescription not issued: this doctor has no verified, unexpired professional registration on their MedXVerse staff profile. Open HMS → Staff, edit the assigned doctor, add their registration details, and mark the registration VERIFIED only after checking the credential. If a registration is already listed, confirm its status is VERIFIED and its expiry date has not passed.'
+      );
     }
 
     const prescriberName =
