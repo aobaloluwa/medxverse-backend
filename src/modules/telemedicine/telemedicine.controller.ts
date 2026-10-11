@@ -195,7 +195,7 @@ export class TelemedicineController {
         return;
       }
       if (session.consultationType === ConsultationType.CHAT) {
-        res.status(409).json({ success: false, message: 'This is a messages-only consultation. Voice and video calls are disabled.' });
+        res.status(409).json({ success: false, message: 'This legacy session does not support calls. New consultations must be booked as voice or video. Secure messaging remains available while the session is active.' });
         return;
       }
 

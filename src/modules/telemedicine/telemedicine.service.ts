@@ -29,7 +29,9 @@ export class TelemedicineService {
     if (Number.isNaN(scheduledStartTime.getTime()) || scheduledStartTime.getTime() < Date.now() - 60_000) {
       throw new Error('Choose a valid consultation date and time in the future.');
     }
-    if (!Object.values(ConsultationType).includes(input.consultationType)) throw new Error('Choose a valid consultation type.');
+    if (input.consultationType !== ConsultationType.VIDEO && input.consultationType !== ConsultationType.VOICE) {
+      throw new ApiError(400, 'Choose either a video or voice consultation. Secure messaging is available with both options.');
+    }
     const [patient, doctor] = await Promise.all([
       PatientModel.findOne({ _id: input.patientId, hospitalId: input.hospitalId, active: true }).select('_id').lean(),
       Staff.findOne({ _id: input.doctorId, hospitalId: input.hospitalId }).select('_id').lean(),
@@ -283,9 +285,6 @@ export class TelemedicineService {
       ...(doctorId ? { doctorId } : {}),
     }).select('consultationType status').lean();
     if (!session) throw new Error('Consultation session not found.');
-    if (session.consultationType !== ConsultationType.CHAT) {
-      throw new ApiError(409, `This consultation is ${session.consultationType.toLowerCase()}-only. Messaging and attachments are disabled for this session.`);
-    }
     if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
       throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
     }
@@ -295,7 +294,6 @@ export class TelemedicineService {
     if (!Types.ObjectId.isValid(input.sessionId) || !Types.ObjectId.isValid(input.senderId)) throw new Error('A valid session and sender are required.');
     const session = await TelemedicineSessionModel.findOne({ _id: input.sessionId, hospitalId: input.hospitalId }).select('patientId doctorId consultationType status').lean();
     if (!session) throw new Error('Consultation session not found.');
-    if (session.consultationType !== ConsultationType.CHAT) throw new ApiError(409, `This consultation is ${session.consultationType.toLowerCase()}-only. Messaging and attachments are disabled for this session.`);
     if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
     if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) throw new Error('You are not the patient assigned to this consultation.');
     if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) throw new Error('Only the assigned doctor can message this patient through this consultation.');
