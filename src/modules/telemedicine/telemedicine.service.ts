@@ -402,8 +402,6 @@ export class TelemedicineService {
     hospitalId: string;
     sessionId: string;
     doctorId: string;
-    prescriberName?: string;
-    registrationNumber?: string;
     telemedicinePlatform?: string;
     diagnosis: string;
     clinicalNotes?: string;
@@ -417,7 +415,6 @@ export class TelemedicineService {
     refillAuthorized?: boolean;
     numberOfRefills?: number;
     controlledSubstance?: boolean;
-    prescriberAuthorizationId?: string;
     digitalSignature: string;
   }) {
     if (![input.hospitalId, input.sessionId, input.doctorId].every(Types.ObjectId.isValid)) {
@@ -449,14 +446,27 @@ export class TelemedicineService {
     ]);
     if (!patient || !doctor) throw new Error('The patient or prescriber record could not be verified.');
 
+    // Identity is derived only from the assigned session and trusted database
+    // records. Never accept doctor, patient, facility, or registration details
+    // supplied by the browser as authoritative prescription metadata.
     const registrations: any[] = Array.isArray((doctor as any).professionalRegistrations)
       ? (doctor as any).professionalRegistrations : [];
-    const registrationNumber = input.registrationNumber?.trim() ||
-      registrations.find((item) => item?.registrationNumber)?.registrationNumber;
-    if (!registrationNumber) throw new Error('The prescriber must have a professional registration/license number on file.');
+    const now = new Date();
+    const verifiedRegistration = registrations.find((item) =>
+      item?.registrationNumber?.trim() &&
+      String(item?.status || '').toUpperCase() === 'VERIFIED' &&
+      (!item?.expiryDate || new Date(item.expiryDate).getTime() > now.getTime())
+    );
+    const registrationNumber = verifiedRegistration?.registrationNumber?.trim();
+    if (!registrationNumber) {
+      throw new Error('The assigned doctor needs a verified, unexpired professional registration on their staff profile before a prescription can be issued.');
+    }
 
-    const prescriberName = input.prescriberName?.trim() ||
+    const prescriberName =
       `${(doctor as any).firstName || ''} ${(doctor as any).lastName || ''}`.trim();
+    if (!prescriberName) {
+      throw new Error('The assigned doctor profile must include the doctor’s full name before a prescription can be issued.');
+    }
     const issuedAt = new Date();
     const verificationId = `MHMS-${new Types.ObjectId().toString().toUpperCase()}`;
     const prescription = await TelemedicinePrescriptionModel.create({
@@ -486,7 +496,7 @@ export class TelemedicineService {
       refillAuthorized: Boolean(input.refillAuthorized),
       numberOfRefills: input.refillAuthorized ? Math.max(0, Math.min(12, Number(input.numberOfRefills) || 0)) : 0,
       controlledSubstance: Boolean(input.controlledSubstance),
-      prescriberAuthorizationId: input.prescriberAuthorizationId?.trim() || registrationNumber,
+      prescriberAuthorizationId: registrationNumber,
       digitalSignature: input.digitalSignature.trim(),
       signatureMethod: 'TYPED_NAME_ACKNOWLEDGMENT',
       signedAt: issuedAt,
