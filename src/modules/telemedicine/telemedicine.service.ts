@@ -274,10 +274,29 @@ export class TelemedicineService {
     return updated;
   }
 
+  public async assertMessagingAllowed(sessionId: string, hospitalId: string, patientId?: string, doctorId?: string): Promise<void> {
+    if (!Types.ObjectId.isValid(sessionId)) throw new Error('Invalid consultation session.');
+    const session = await TelemedicineSessionModel.findOne({
+      _id: sessionId,
+      hospitalId,
+      ...(patientId ? { patientId } : {}),
+      ...(doctorId ? { doctorId } : {}),
+    }).select('consultationType status').lean();
+    if (!session) throw new Error('Consultation session not found.');
+    if (session.consultationType !== ConsultationType.CHAT) {
+      throw new ApiError(409, `This consultation is ${session.consultationType.toLowerCase()}-only. Messaging and attachments are disabled for this session.`);
+    }
+    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
+      throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
+    }
+  }
+
   public async sendMessage(input: SendMessageInput): Promise<ITelemedicineMessageDocument> {
     if (!Types.ObjectId.isValid(input.sessionId) || !Types.ObjectId.isValid(input.senderId)) throw new Error('A valid session and sender are required.');
-    const session = await TelemedicineSessionModel.findOne({ _id: input.sessionId, hospitalId: input.hospitalId }).select('patientId doctorId').lean();
+    const session = await TelemedicineSessionModel.findOne({ _id: input.sessionId, hospitalId: input.hospitalId }).select('patientId doctorId consultationType status').lean();
     if (!session) throw new Error('Consultation session not found.');
+    if (session.consultationType !== ConsultationType.CHAT) throw new ApiError(409, `This consultation is ${session.consultationType.toLowerCase()}-only. Messaging and attachments are disabled for this session.`);
+    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
     if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) throw new Error('You are not the patient assigned to this consultation.');
     if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) throw new Error('Only the assigned doctor can message this patient through this consultation.');
     if (!input.messageText?.trim() && !input.attachmentUrl) throw new Error('Message text or an attachment is required.');
@@ -331,8 +350,10 @@ export class TelemedicineService {
     const session = await TelemedicineSessionModel.findOne({
       _id: input.sessionId,
       hospitalId: input.hospitalId,
-    }).select('patientId doctorId consultationType').lean();
+    }).select('patientId doctorId consultationType status').lean();
     if (!session) throw new Error('Consultation session not found.');
+    if (session.consultationType === ConsultationType.CHAT) throw new ApiError(409, 'This is a messages-only consultation. Voice and video calls are disabled.');
+    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) throw new ApiError(409, 'This consultation has ended. New calls are not allowed. Book a follow-up consultation to continue.');
 
     if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) {
       throw new Error('You are not the patient assigned to this consultation.');

@@ -191,7 +191,11 @@ export class TelemedicineController {
         return;
       }
       if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
-        res.status(409).json({ success: false, message: 'This consultation has ended and its meeting is no longer available.' });
+        res.status(409).json({ success: false, message: 'This consultation has ended and its meeting is no longer available. Book a follow-up consultation to continue.' });
+        return;
+      }
+      if (session.consultationType === ConsultationType.CHAT) {
+        res.status(409).json({ success: false, message: 'This is a messages-only consultation. Voice and video calls are disabled.' });
         return;
       }
 
@@ -403,6 +407,7 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can upload consultation attachments.' });
         return;
       }
+      await telemedicineService.assertMessagingAllowed(sessionId, hospitalId, patientId, doctorId);
       await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
       if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
         res.status(503).json({ success: false, message: 'File storage is not configured.' });
@@ -525,6 +530,10 @@ export class TelemedicineController {
       const authReq = req as AuthenticatedRequest;
       const hospitalId = authReq.user.hospitalId;
       const sessionId = req.params.sessionId as string;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can view consultation messages.' });
+        return;
+      }
 
       const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
       const doctorId = await resolveStaffRecordId(authReq);
