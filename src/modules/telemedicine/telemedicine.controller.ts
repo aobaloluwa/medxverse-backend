@@ -293,6 +293,39 @@ export class TelemedicineController {
     }
   }
 
+  public async recordCallSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can record a call summary.' });
+        return;
+      }
+
+      const staffRecordId = await resolveStaffRecordId(authReq);
+      if (authReq.user.userType === 'STAFF' && !staffRecordId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+
+      const senderModel = authReq.user.userType === 'PATIENT' ? 'Patient' : 'User';
+      const senderId = authReq.user.userType === 'PATIENT' ? String(authReq.user._id) : String(staffRecordId);
+      const data = await telemedicineService.recordCallSummary({
+        sessionId: String(req.params.id || ''),
+        hospitalId: String(authReq.user.hospitalId || ''),
+        senderId,
+        senderModel,
+        senderRole: String(authReq.user.userType || ''),
+        callId: String(req.body.callId || ''),
+        durationSeconds: Number(req.body.durationSeconds),
+        participantCount: Number(req.body.participantCount),
+      });
+
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public async sendMessage(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;

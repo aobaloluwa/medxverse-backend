@@ -6,6 +6,11 @@ export enum ConsultationType {
   CHAT = 'CHAT',
 }
 
+export enum TelemedicineMessageType {
+  TEXT = 'TEXT',
+  CALL_SUMMARY = 'CALL_SUMMARY',
+}
+
 export enum ConsultationStatus {
   WAITING_ROOM = 'WAITING_ROOM',
   IN_PROGRESS = 'IN_PROGRESS',
@@ -49,6 +54,13 @@ export interface ITelemedicineMessage {
   attachmentMimeType?: string;
   attachmentSize?: number;
   prescriptionId?: Types.ObjectId;
+  messageType?: TelemedicineMessageType;
+  callSummary?: {
+    callId: string;
+    callType: 'VIDEO' | 'VOICE';
+    durationSeconds: number;
+    participantCount: number;
+  };
   sentAt: Date;
 }
 

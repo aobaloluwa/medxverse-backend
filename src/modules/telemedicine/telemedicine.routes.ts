@@ -34,6 +34,9 @@ router.get('/sessions/:id/meeting-token', (req, res, next) =>
 router.patch('/sessions/:id/status', (req, res, next) =>
   telemedicineController.updateSessionStatus(req, res, next)
 );
+router.post('/sessions/:id/call-summary', (req, res, next) =>
+  telemedicineController.recordCallSummary(req, res, next)
+);
 
 // Real-time Chat & In-Consultation Messaging
 router.post('/sessions/:id/prescriptions', (req, res, next) =>

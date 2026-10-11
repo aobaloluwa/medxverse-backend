@@ -13,6 +13,7 @@ import {
   ITelemedicineMessageDocument,
   ConsultationStatus,
   ConsultationType,
+  TelemedicineMessageType,
 } from './telemedicine.types.js';
 import { publishEhrResource } from '../patient/ehr.publisher.js';
 
@@ -305,6 +306,82 @@ export class TelemedicineService {
       sessionId: new Types.ObjectId(input.sessionId),
       senderId: new Types.ObjectId(input.senderId),
     });
+  }
+
+  public async recordCallSummary(input: {
+    sessionId: string;
+    hospitalId: string;
+    senderId: string;
+    senderModel: 'User' | 'Patient';
+    senderRole?: string;
+    callId: string;
+    durationSeconds: number;
+    participantCount: number;
+  }): Promise<ITelemedicineMessageDocument> {
+    if (![input.sessionId, input.hospitalId, input.senderId].every(Types.ObjectId.isValid)) {
+      throw new Error('A valid consultation session and participant are required.');
+    }
+    const callId = String(input.callId || '').trim();
+    if (!callId || callId.length > 100) throw new Error('A valid call reference is required.');
+
+    const durationSeconds = Math.max(0, Math.min(86400, Math.floor(Number(input.durationSeconds) || 0)));
+    const participantCount = Math.max(1, Math.min(20, Math.floor(Number(input.participantCount) || 1)));
+
+    const session = await TelemedicineSessionModel.findOne({
+      _id: input.sessionId,
+      hospitalId: input.hospitalId,
+    }).select('patientId doctorId consultationType').lean();
+    if (!session) throw new Error('Consultation session not found.');
+
+    if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) {
+      throw new Error('You are not the patient assigned to this consultation.');
+    }
+    if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) {
+      throw new Error('Only the assigned doctor can record a call summary for this consultation.');
+    }
+    if (input.senderModel !== 'Patient' && input.senderRole !== 'STAFF') {
+      throw new Error('Only the assigned patient or staff member can record a call summary.');
+    }
+    if (session.consultationType !== ConsultationType.VIDEO && session.consultationType !== ConsultationType.VOICE) {
+      throw new Error('Call summaries are available only for voice and video consultations.');
+    }
+
+    const existing = await TelemedicineMessageModel.findOne({
+      sessionId: input.sessionId,
+      hospitalId: input.hospitalId,
+      'callSummary.callId': callId,
+    }).exec();
+    if (existing) return existing;
+
+    const callType = session.consultationType;
+    const durationLabel = durationSeconds < 60
+      ? `${durationSeconds} ${durationSeconds === 1 ? 'second' : 'seconds'}`
+      : `${Math.floor(durationSeconds / 60)} ${Math.floor(durationSeconds / 60) === 1 ? 'minute' : 'minutes'}${durationSeconds % 60 ? ` ${durationSeconds % 60} sec` : ''}`;
+    const participantLabel = `${participantCount} ${participantCount === 1 ? 'participant' : 'participants'} joined`;
+    const messageText = `${callType === ConsultationType.VIDEO ? 'Video' : 'Voice'} call · ${durationLabel} · ${participantLabel}`;
+
+    try {
+      return await TelemedicineMessageModel.create({
+        hospitalId: new Types.ObjectId(input.hospitalId),
+        sessionId: new Types.ObjectId(input.sessionId),
+        senderId: new Types.ObjectId(input.senderId),
+        senderModel: input.senderModel,
+        messageText,
+        messageType: TelemedicineMessageType.CALL_SUMMARY,
+        callSummary: { callId, callType, durationSeconds, participantCount },
+        sentAt: new Date(),
+      });
+    } catch (error) {
+      // If two participants submit the same call summary simultaneously, return
+      // the already-saved record instead of surfacing a duplicate-key error.
+      const duplicate = await TelemedicineMessageModel.findOne({
+        sessionId: input.sessionId,
+        hospitalId: input.hospitalId,
+        'callSummary.callId': callId,
+      }).exec();
+      if (duplicate) return duplicate;
+      throw error;
+    }
   }
 
   public async getSessionMessages(

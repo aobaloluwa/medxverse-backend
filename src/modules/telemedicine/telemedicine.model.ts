@@ -4,6 +4,7 @@ import {
   ITelemedicineMessageDocument,
   ConsultationType,
   ConsultationStatus,
+  TelemedicineMessageType,
 } from './telemedicine.types.js';
 
 const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
@@ -62,15 +63,26 @@ const TelemedicineMessageSchema = new Schema<ITelemedicineMessageDocument>(
     attachmentMimeType: { type: String, trim: true },
     attachmentSize: { type: Number, min: 0 },
     prescriptionId: { type: Schema.Types.ObjectId, ref: 'TelemedicinePrescription', index: true },
+    messageType: { type: String, enum: Object.values(TelemedicineMessageType), default: TelemedicineMessageType.TEXT, index: true },
+    callSummary: {
+      callId: { type: String, trim: true, maxlength: 100 },
+      callType: { type: String, enum: ['VIDEO', 'VOICE'] },
+      durationSeconds: { type: Number, min: 0, max: 86400 },
+      participantCount: { type: Number, min: 1, max: 20 },
+    },
     sentAt: { type: Date, default: Date.now },
   },
   { timestamps: false }
 );
 
-export const TelemedicineMessageModel = model<ITelemedicineMessageDocument>(
-  'TelemedicineMessage',
-  TelemedicineMessageSchema
+TelemedicineMessageSchema.index(
+  { sessionId: 1, 'callSummary.callId': 1 },
+  { unique: true, partialFilterExpression: { 'callSummary.callId': { $type: 'string' } }, name: 'unique_call_summary_per_session' }
 );
+
+export const TelemedicineMessageModel =
+  (mongoose.models.TelemedicineMessage as mongoose.Model<ITelemedicineMessageDocument>) ||
+  mongoose.model<ITelemedicineMessageDocument>('TelemedicineMessage', TelemedicineMessageSchema);
 
 const PrescriptionMedicationSchema = new Schema({
   genericName: { type: String, required: true, trim: true, maxlength: 200 },
