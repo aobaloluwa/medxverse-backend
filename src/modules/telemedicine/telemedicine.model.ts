@@ -100,7 +100,7 @@ const TelemedicinePrescriptionSchema = new Schema({
   doctorId: { type: Schema.Types.ObjectId, ref: 'Staff', required: true, index: true },
   facilityName: { type: String, required: true, trim: true },
   prescriberName: { type: String, required: true, trim: true },
-  professionalRegistrationNumber: { type: String, required: true, trim: true },
+  professionalRegistrationNumber: { type: String, required: false, trim: true },
   telemedicinePlatform: { type: String, default: 'MedXVerse', trim: true },
   dateIssued: { type: Date, default: Date.now, required: true },
   patientSnapshot: {
@@ -120,7 +120,7 @@ const TelemedicinePrescriptionSchema = new Schema({
   refillAuthorized: { type: Boolean, default: false },
   numberOfRefills: { type: Number, min: 0, max: 12, default: 0 },
   controlledSubstance: { type: Boolean, default: false },
-  prescriberAuthorizationId: { type: String, required: true, trim: true },
+  prescriberAuthorizationId: { type: String, required: false, trim: true },
   digitalSignature: { type: String, required: true, trim: true, maxlength: 300 },
   signatureMethod: { type: String, enum: ['TYPED_NAME_ACKNOWLEDGMENT'], default: 'TYPED_NAME_ACKNOWLEDGMENT' },
   signedAt: { type: Date, required: true },

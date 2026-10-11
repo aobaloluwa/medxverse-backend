@@ -458,15 +458,10 @@ export class TelemedicineService {
       String(item?.status || '').toUpperCase() === 'VERIFIED' &&
       (!item?.expiryDate || new Date(item.expiryDate).getTime() > now.getTime())
     );
-    const registrationNumber = verifiedRegistration?.registrationNumber?.trim();
-    if (!registrationNumber) {
-      // This is a staff-profile/credential validation issue, not an internal
-      // server failure. Return a 422 so the frontend can show a useful message.
-      throw new ApiError(
-        422,
-        'Prescription not issued: this doctor has no verified, unexpired professional registration on their MedXVerse staff profile. Open HMS → Staff, edit the assigned doctor, add their registration details, and mark the registration VERIFIED only after checking the credential. If a registration is already listed, confirm its status is VERIFIED and its expiry date has not passed.'
-      );
-    }
+    // Professional registration is optional in this workflow. When a verified,
+    // unexpired credential exists, include it in the prescription metadata;
+    // otherwise leave the registration fields blank and do not block issuance.
+    const registrationNumber = verifiedRegistration?.registrationNumber?.trim() || undefined;
 
     const prescriberName =
       `${(doctor as any).firstName || ''} ${(doctor as any).lastName || ''}`.trim();
