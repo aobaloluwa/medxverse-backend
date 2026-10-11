@@ -80,8 +80,8 @@ export const authenticateAccount = (
       process.env.JWT_SECRET || 'fallback_secret_key'
     ) as JwtPayload;
 
-    if (decoded.userType === 'PATIENT' && !req.originalUrl.split('?')[0].includes('/telemedicine')) {
-      res.status(403).json({ success: false, message: 'Patient portal tokens may only access telemedicine endpoints.' });
+    if (decoded.userType === 'PATIENT' && !req.originalUrl.split('?')[0].includes('/telemedicine') && !req.originalUrl.split('?')[0].includes('/patient-portal/auth/connection')) {
+      res.status(403).json({ success: false, message: 'Patient portal tokens may only access telemedicine endpoints or restore their saved hospital connection.' });
       return;
     }
 

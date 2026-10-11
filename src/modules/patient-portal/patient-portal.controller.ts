@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import type { AuthRequest } from '../../middlewares/auth.middleware.js';
 import { PatientPortalService } from './patient-portal.service.js';
 
 export class PatientPortalController {
@@ -47,6 +48,21 @@ export class PatientPortalController {
         success: false,
         message: error?.message || 'Patient login failed.',
       });
+    }
+  }
+
+
+  static async connection(req: Request, res: Response): Promise<void> {
+    try {
+      const authReq = req as AuthRequest;
+      if (authReq.user?.userType !== 'PATIENT' || !authReq.user._id || !authReq.user.hospitalId) {
+        res.status(403).json({ success: false, message: 'An authenticated patient portal account is required.' });
+        return;
+      }
+      const data = await PatientPortalService.getConnection(authReq.user._id, authReq.user.hospitalId);
+      res.status(200).json({ success: true, message: 'Hospital connection restored.', data });
+    } catch (error: any) {
+      res.status(404).json({ success: false, message: error?.message || 'Unable to restore hospital connection.' });
     }
   }
 

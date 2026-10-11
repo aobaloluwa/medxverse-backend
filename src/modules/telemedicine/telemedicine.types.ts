@@ -45,6 +45,10 @@ export interface ITelemedicineMessage {
   senderModel: 'User' | 'Patient';
   messageText: string;
   attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
+  attachmentSize?: number;
+  prescriptionId?: Types.ObjectId;
   sentAt: Date;
 }
 
@@ -73,6 +77,9 @@ export interface SendMessageInput {
   senderModel: 'User' | 'Patient';
   messageText: string;
   attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
+  attachmentSize?: number;
   senderRole?: string;
 }
 

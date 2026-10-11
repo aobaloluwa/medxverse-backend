@@ -297,6 +297,52 @@ export class PatientPortalService {
     };
   }
 
+
+  /**
+   * Restores the hospital connection from the authenticated portal account.
+   * The association is stored in MongoDB, not in browser/device state.
+   */
+  static async getConnection(patientId: string, hospitalId: string) {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId)) {
+      throw new Error('The authenticated patient connection is invalid.');
+    }
+    const portalAccount = await PatientPortalAccountModel.findOne({
+      patientId: new Types.ObjectId(patientId),
+      hospitalId: new Types.ObjectId(hospitalId),
+      active: true,
+    }).select('_id patientId hospitalId email lastLoginAt createdAt').lean().exec();
+    if (!portalAccount) throw new Error('No active hospital connection was found for this patient account.');
+
+    const [hospitalResult, patientResult] = await Promise.all([
+      Account.findOne({ _id: hospitalId, accountType: 'HOSPITAL', isActive: true })
+        .select('_id name code logoUrl address').lean().exec(),
+      PatientModel.findOne({ _id: patientId, hospitalId, active: true })
+        .select('_id firstName lastName email mrn universalPatientId').lean().exec(),
+    ]);
+    const hospital = (Array.isArray(hospitalResult) ? hospitalResult[0] : hospitalResult) as any;
+    const patient = (Array.isArray(patientResult) ? patientResult[0] : patientResult) as any;
+    if (!hospital || !patient) throw new Error('The linked hospital or patient record is no longer active.');
+
+    return {
+      connected: true,
+      hospital: {
+        id: String(hospital._id),
+        name: hospital.name || 'Hospital',
+        code: hospital.code || '',
+        logoUrl: hospital.logoUrl || '',
+        address: hospital.address || '',
+      },
+      patient: {
+        id: String(patient._id),
+        name: `${patient.firstName || ''} ${patient.lastName || ''}`.trim(),
+        email: patient.email || portalAccount.email,
+        mrn: patient.mrn || '',
+        universalPatientId: patient.universalPatientId || '',
+      },
+      connectedAt: portalAccount.createdAt,
+    };
+  }
+
   static async link(input: {
     hospitalId?: string;
     hospitalCode?: string;

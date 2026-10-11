@@ -2,7 +2,8 @@ import { Types } from 'mongoose';
 import { PatientModel } from '../patient/patient.model.js';
 import { Staff } from '../staff/staff.model.js';
 import { ProviderScheduleModel } from '../appointment/appointment.model.js';
-import { TelemedicineSessionModel, TelemedicineMessageModel } from './telemedicine.model.js';
+import { TelemedicineSessionModel, TelemedicineMessageModel, TelemedicinePrescriptionModel } from './telemedicine.model.js';
+import { Account } from '../auth/auth.model.js';
 import {
   CreateTelemedicineSessionInput,
   UpdateSessionStatusInput,
@@ -277,9 +278,29 @@ export class TelemedicineService {
     if (!session) throw new Error('Consultation session not found.');
     if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) throw new Error('You are not the patient assigned to this consultation.');
     if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) throw new Error('Only the assigned doctor can message this patient through this consultation.');
-    if (!input.messageText || !input.messageText.trim()) throw new Error('Message cannot be empty.');
+    if (!input.messageText?.trim() && !input.attachmentUrl) throw new Error('Message text or an attachment is required.');
+    if (input.attachmentUrl) {
+      if (!input.attachmentUrl.startsWith('https://res.cloudinary.com/')) {
+        throw new Error('Attachments must be uploaded through MedXVerse file storage first.');
+      }
+      const allowedAttachmentTypes = new Set([
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'application/pdf', 'text/plain', 'text/csv', 'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/rtf',
+      ]);
+      if (!input.attachmentName || !allowedAttachmentTypes.has(String(input.attachmentMimeType || '').toLowerCase())) {
+        throw new Error('The attachment filename or file type is invalid.');
+      }
+      if (Number(input.attachmentSize || 0) > 10 * 1024 * 1024) throw new Error('Attachments must be 10 MB or smaller.');
+    }
     return TelemedicineMessageModel.create({
       ...input,
+      messageText: input.messageText?.trim() || (input.attachmentName ? `Attachment: ${input.attachmentName}` : 'Attachment'),
       hospitalId: new Types.ObjectId(input.hospitalId),
       sessionId: new Types.ObjectId(input.sessionId),
       senderId: new Types.ObjectId(input.senderId),
@@ -299,6 +320,271 @@ export class TelemedicineService {
       .sort({ sentAt: 1 })
       .exec();
   }
+
+  public async issuePrescription(input: {
+    hospitalId: string;
+    sessionId: string;
+    doctorId: string;
+    prescriberName?: string;
+    registrationNumber?: string;
+    telemedicinePlatform?: string;
+    diagnosis: string;
+    clinicalNotes?: string;
+    medications: Array<{
+      genericName: string; strengthForm: string; dosageFrequency: string;
+      duration: string; quantity: string; route: string;
+    }>;
+    patientInstructions?: string;
+    pharmacistInstructions?: string;
+    genericSubstitutionPermitted?: boolean;
+    refillAuthorized?: boolean;
+    numberOfRefills?: number;
+    controlledSubstance?: boolean;
+    prescriberAuthorizationId?: string;
+    digitalSignature: string;
+  }) {
+    if (![input.hospitalId, input.sessionId, input.doctorId].every(Types.ObjectId.isValid)) {
+      throw new Error('A valid hospital, consultation and prescriber are required.');
+    }
+    if (!input.diagnosis?.trim()) throw new Error('Diagnosis is required.');
+    if (!input.digitalSignature?.trim()) throw new Error('The prescriber must provide an electronic signature acknowledgment.');
+    if (!Array.isArray(input.medications) || input.medications.length < 1 || input.medications.length > 6) {
+      throw new Error('Add between 1 and 6 medications.');
+    }
+    for (const [index, medication] of input.medications.entries()) {
+      if (!medication.genericName?.trim() || !medication.strengthForm?.trim() ||
+          !medication.dosageFrequency?.trim() || !medication.duration?.trim() ||
+          !medication.quantity?.trim() || !medication.route?.trim()) {
+        throw new Error(`Complete all required fields for medication ${index + 1}.`);
+      }
+    }
+    const session = await TelemedicineSessionModel.findOne({
+      _id: input.sessionId, hospitalId: input.hospitalId, doctorId: input.doctorId,
+    }).lean();
+    if (!session) throw new Error('Only the doctor assigned to this consultation can issue its prescription.');
+
+    const [patient, doctor, hospital] = await Promise.all([
+      PatientModel.findOne({ _id: session.patientId, hospitalId: input.hospitalId, active: true })
+        .select('_id firstName lastName dateOfBirth universalPatientId mrn phone address allergies email').lean(),
+      Staff.findOne({ _id: input.doctorId, hospitalId: input.hospitalId })
+        .select('_id firstName lastName professionalRegistrations').lean(),
+      Account.findById(input.hospitalId).select('_id name').lean(),
+    ]);
+    if (!patient || !doctor) throw new Error('The patient or prescriber record could not be verified.');
+
+    const registrations: any[] = Array.isArray((doctor as any).professionalRegistrations)
+      ? (doctor as any).professionalRegistrations : [];
+    const registrationNumber = input.registrationNumber?.trim() ||
+      registrations.find((item) => item?.registrationNumber)?.registrationNumber;
+    if (!registrationNumber) throw new Error('The prescriber must have a professional registration/license number on file.');
+
+    const prescriberName = input.prescriberName?.trim() ||
+      `${(doctor as any).firstName || ''} ${(doctor as any).lastName || ''}`.trim();
+    const issuedAt = new Date();
+    const verificationId = `MHMS-${new Types.ObjectId().toString().toUpperCase()}`;
+    const prescription = await TelemedicinePrescriptionModel.create({
+      hospitalId: new Types.ObjectId(input.hospitalId),
+      sessionId: session._id,
+      patientId: session.patientId,
+      doctorId: session.doctorId,
+      facilityName: (hospital as any)?.name || 'MHMS Registered Facility',
+      prescriberName,
+      professionalRegistrationNumber: registrationNumber,
+      telemedicinePlatform: input.telemedicinePlatform?.trim() || 'MedXVerse',
+      dateIssued: issuedAt,
+      patientSnapshot: {
+        fullName: `${(patient as any).firstName} ${(patient as any).lastName}`.trim(),
+        dateOfBirth: (patient as any).dateOfBirth,
+        patientIdNumber: (patient as any).universalPatientId || (patient as any).mrn,
+        contactNumber: (patient as any).phone,
+        residentialAddress: (patient as any).address,
+        knownDrugAllergies: ((patient as any).allergies || []).map((item: any) => item.allergen).filter(Boolean),
+      },
+      diagnosis: input.diagnosis.trim(),
+      clinicalNotes: input.clinicalNotes?.trim(),
+      medications: input.medications,
+      patientInstructions: input.patientInstructions?.trim(),
+      pharmacistInstructions: input.pharmacistInstructions?.trim(),
+      genericSubstitutionPermitted: Boolean(input.genericSubstitutionPermitted),
+      refillAuthorized: Boolean(input.refillAuthorized),
+      numberOfRefills: input.refillAuthorized ? Math.max(0, Math.min(12, Number(input.numberOfRefills) || 0)) : 0,
+      controlledSubstance: Boolean(input.controlledSubstance),
+      prescriberAuthorizationId: input.prescriberAuthorizationId?.trim() || registrationNumber,
+      digitalSignature: input.digitalSignature.trim(),
+      signatureMethod: 'TYPED_NAME_ACKNOWLEDGMENT',
+      signedAt: issuedAt,
+      verificationId,
+      status: 'ISSUED',
+    });
+
+    // Publish a structured medication resource into the existing HMS unified EHR.
+    await publishEhrResource({
+      hospitalId: input.hospitalId,
+      patientId: String(session.patientId),
+      actorId: input.doctorId,
+      role: 'DOCTOR',
+      resourceType: 'MedicationStatement',
+      resourceId: String(prescription._id),
+      status: 'ISSUED',
+      department: 'Telemedicine',
+      code: { system: 'MHMS-TM-RX-01', code: 'TELEMEDICINE_PRESCRIPTION', display: 'Telemedicine prescription' },
+      resource: {
+        resourceType: 'MedicationStatement',
+        id: String(prescription._id),
+        status: 'active',
+        effectiveDateTime: issuedAt,
+        medication: input.medications.map((medication) => ({
+          genericName: medication.genericName,
+          strengthForm: medication.strengthForm,
+          dosageFrequency: medication.dosageFrequency,
+          duration: medication.duration,
+          quantity: medication.quantity,
+          route: medication.route,
+        })),
+        reasonCode: input.diagnosis,
+        note: input.clinicalNotes,
+        sourceTelemedicineSessionId: String(session._id),
+        prescriptionId: String(prescription._id),
+        verificationId,
+      },
+      reason: 'Telemedicine prescription issued and recorded in the patient EHR.',
+    });
+
+    await TelemedicineMessageModel.create({
+      hospitalId: new Types.ObjectId(input.hospitalId),
+      sessionId: session._id,
+      senderId: session.doctorId,
+      senderModel: 'User',
+      messageText: `Prescription issued (${verificationId}).`,
+      prescriptionId: prescription._id,
+      sentAt: issuedAt,
+    });
+
+    return prescription;
+  }
+
+
+
+  
+  public async verifyPrescription(verificationId: string) {
+    const value = String(verificationId || '').trim();
+
+    if (!value || value.length > 100) {
+      throw new Error('A valid prescription verification ID is required.');
+    }
+
+    const prescriptionResult = await TelemedicinePrescriptionModel.findOne({
+      verificationId: value,
+    })
+      .select(
+        'verificationId status facilityName prescriberName professionalRegistrationNumber dateIssued'
+      )
+      .lean()
+      .exec();
+
+    // Normalize the result because the model typings may infer
+    // a document-or-array union.
+    type PrescriptionVerificationRecord = {
+      verificationId: string;
+      status: string;
+      facilityName?: string;
+      prescriberName?: string;
+      professionalRegistrationNumber?: string;
+      dateIssued?: Date;
+    };
+
+    const prescription = (
+      Array.isArray(prescriptionResult)
+        ? prescriptionResult[0]
+        : prescriptionResult
+    ) as PrescriptionVerificationRecord | null | undefined;
+
+    if (!prescription) {
+      return {
+        valid: false,
+        status: 'NOT_FOUND',
+        message: 'Prescription verification ID was not found.',
+      };
+    }
+
+    const valid = prescription.status !== 'CANCELLED';
+
+    return {
+      valid,
+      status: prescription.status,
+      verificationId: prescription.verificationId,
+      facilityName: prescription.facilityName,
+      prescriberName: prescription.prescriberName,
+      professionalRegistrationNumber:
+        prescription.professionalRegistrationNumber,
+      dateIssued: prescription.dateIssued,
+      message: valid
+        ? 'Prescription record verified.'
+        : 'This prescription has been cancelled.',
+    };
+  }
+
+
+  public async dispensePrescription(input: {
+    prescriptionId: string;
+    hospitalId: string;
+    pharmacistName: string;
+    pharmacyName: string;
+    notes?: string;
+  }) {
+    if (!Types.ObjectId.isValid(input.prescriptionId) || !Types.ObjectId.isValid(input.hospitalId)) {
+      throw new Error('A valid prescription is required.');
+    }
+    if (!input.pharmacistName?.trim() || !input.pharmacyName?.trim()) {
+      throw new Error('Pharmacist name and pharmacy/facility name are required.');
+    }
+    const prescription = await TelemedicinePrescriptionModel.findOne({
+      _id: input.prescriptionId, hospitalId: input.hospitalId,
+    });
+    if (!prescription) throw new Error('Prescription not found.');
+    if (prescription.status === 'CANCELLED') throw new Error('A cancelled prescription cannot be dispensed.');
+    if (prescription.status === 'DISPENSED') throw new Error('This prescription has already been marked as dispensed.');
+    prescription.status = 'DISPENSED';
+    prescription.pharmacyDispensing = {
+      dispensedBy: input.pharmacistName.trim(),
+      pharmacyName: input.pharmacyName.trim(),
+      dateDispensed: new Date(),
+      notes: input.notes?.trim(),
+    };
+    await prescription.save();
+    await publishEhrResource({
+      hospitalId: input.hospitalId,
+      patientId: String(prescription.patientId),
+      actorId: String(prescription.doctorId),
+      role: 'PHARMACIST',
+      resourceType: 'MedicationStatement',
+      resourceId: String(prescription._id),
+      status: 'DISPENSED',
+      department: 'Pharmacy',
+      code: { system: 'MHMS-TM-RX-01', code: 'TELEMEDICINE_PRESCRIPTION', display: 'Telemedicine prescription' },
+      resource: {
+        resourceType: 'MedicationStatement',
+        id: String(prescription._id),
+        status: 'completed',
+        prescriptionId: String(prescription._id),
+        verificationId: prescription.verificationId,
+        pharmacyDispensing: prescription.pharmacyDispensing,
+        medication: prescription.medications,
+      },
+      reason: 'Pharmacy dispensing details recorded against the patient EHR prescription.',
+    });
+    return prescription;
+  }
+
+  public async getSessionPrescriptions(sessionId: string, hospitalId: string, patientId?: string, doctorId?: string) {
+    if (!Types.ObjectId.isValid(sessionId)) throw new Error('Invalid consultation session.');
+    const session = await TelemedicineSessionModel.findOne({
+      _id: sessionId, hospitalId, ...(patientId ? { patientId } : {}), ...(doctorId ? { doctorId } : {}),
+    }).select('_id').lean();
+    if (!session) throw new Error('Consultation session not found.');
+    return TelemedicinePrescriptionModel.find({ sessionId, hospitalId }).sort({ dateIssued: -1 }).lean().exec();
+  }
+
 }
 
 export const telemedicineService = new TelemedicineService();

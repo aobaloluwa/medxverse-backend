@@ -3,6 +3,7 @@ import { AuthRequest } from '../../middlewares/auth.middleware.js';
 import { CommunicationService } from './communication.service.js';
 import { MessageType } from './communication.types.js';
 import { StaffPresenceStatus } from '../staff-auth/staff-user.model.js';
+import cloudinary from '../../config/cloudinary.js';
 
 function requireStaff(req: AuthRequest): { hospitalId: string; userId: string } {
   const hospitalId = req.user?.hospitalId || req.account?.accountId;
@@ -14,6 +15,76 @@ function requireStaff(req: AuthRequest): { hospitalId: string; userId: string } 
 }
 
 export class CommunicationController {
+
+  static async uploadAttachment(req: AuthRequest, res: Response) {
+    try {
+      const { hospitalId, userId } = requireStaff(req);
+      const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
+      if (!file?.buffer?.length) {
+        res.status(400).json({ success: false, message: 'Choose an image or document to upload.' });
+        return;
+      }
+
+      const allowedTypes = new Set([
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'application/pdf', 'text/plain', 'text/csv',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/rtf',
+      ]);
+      if (!allowedTypes.has(String(file.mimetype || '').toLowerCase())) {
+        res.status(415).json({ success: false, message: 'Only images, PDF, Word, Excel, PowerPoint, RTF, CSV and TXT documents are allowed.' });
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        res.status(413).json({ success: false, message: 'Attachments must be 10 MB or smaller.' });
+        return;
+      }
+
+      // This lookup also verifies that the authenticated staff member belongs to the conversation.
+      await CommunicationService.getConversation(hospitalId, userId, String(req.params.id));
+      if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+        res.status(503).json({ success: false, message: 'File storage is not configured.' });
+        return;
+      }
+
+      const isImage = file.mimetype.toLowerCase().startsWith('image/');
+      const uploaded = await new Promise<any>((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({
+          folder: `medxverse/chat/${hospitalId}/${String(req.params.id)}`,
+          resource_type: isImage ? 'image' : 'raw',
+          use_filename: false,
+          unique_filename: true,
+          overwrite: false,
+          tags: ['medxverse', 'chat-attachment'],
+        }, (error, result) => {
+          if (error || !result) reject(error || new Error('Cloudinary upload failed.'));
+          else resolve(result);
+        });
+        stream.end(file.buffer);
+      });
+
+      res.status(201).json({
+        success: true,
+        data: {
+          url: uploaded.secure_url,
+          name: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          publicId: uploaded.public_id,
+          resourceType: uploaded.resource_type,
+        },
+      });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error?.message || 'Attachment upload failed.' });
+    }
+  }
+
+
   static async inbox(req: AuthRequest, res: Response) {
     try {
       const { hospitalId, userId } = requireStaff(req);

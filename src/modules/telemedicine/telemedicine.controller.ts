@@ -5,6 +5,7 @@ import { Staff } from '../staff/staff.model.js';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { env } from '../../config/env.js';
 import { ConsultationType, ConsultationStatus } from './telemedicine.types.js';
+import cloudinary from '../../config/cloudinary.js';
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -296,7 +297,11 @@ export class TelemedicineController {
     try {
       const authReq = req as AuthenticatedRequest;
       const hospitalId = authReq.user.hospitalId;
-      const { sessionId, messageText, attachmentUrl } = req.body;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can send consultation messages.' });
+        return;
+      }
+      const { sessionId, messageText, attachmentUrl, attachmentName, attachmentMimeType, attachmentSize } = req.body;
       const senderModel = authReq.user.userType === 'PATIENT' ? 'Patient' : 'User';
       const staffRecordId = await resolveStaffRecordId(authReq);
       if (authReq.user.userType === 'STAFF' && !staffRecordId) {
@@ -314,9 +319,169 @@ export class TelemedicineController {
         senderRole: String(authReq.user.userType || 'ACCOUNT'),
         messageText,
         attachmentUrl,
+        attachmentName,
+        attachmentMimeType,
+        attachmentSize: attachmentSize === undefined ? undefined : Number(attachmentSize),
       });
 
       res.status(201).json({ success: true, data: message });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+
+  public async uploadMessageAttachment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const file = (req as Request & { file?: Express.Multer.File }).file;
+      if (!file?.buffer?.length) {
+        res.status(400).json({ success: false, message: 'Choose an image or document to upload.' });
+        return;
+      }
+      const allowedTypes = new Set([
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'application/pdf', 'text/plain', 'text/csv',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/rtf',
+      ]);
+      if (!allowedTypes.has(String(file.mimetype || '').toLowerCase())) {
+        res.status(415).json({ success: false, message: 'Only images and common document formats are allowed.' });
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        res.status(413).json({ success: false, message: 'Attachments must be 10 MB or smaller.' });
+        return;
+      }
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const sessionId = String(req.params.sessionId || '');
+      const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (authReq.user.userType === 'STAFF' && !doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can upload consultation attachments.' });
+        return;
+      }
+      await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
+      if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+        res.status(503).json({ success: false, message: 'File storage is not configured.' });
+        return;
+      }
+      const isImage = file.mimetype.toLowerCase().startsWith('image/');
+      const uploaded = await new Promise<any>((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({
+          folder: `medxverse/telemedicine/${hospitalId}/${sessionId}`,
+          resource_type: isImage ? 'image' : 'raw',
+          use_filename: false,
+          unique_filename: true,
+          overwrite: false,
+          tags: ['medxverse', 'telemedicine-attachment'],
+        }, (error, result) => {
+          if (error || !result) reject(error || new Error('Cloudinary upload failed.'));
+          else resolve(result);
+        });
+        stream.end(file.buffer);
+      });
+      res.status(201).json({
+        success: true,
+        data: {
+          url: uploaded.secure_url,
+          name: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          publicId: uploaded.public_id,
+          resourceType: uploaded.resource_type,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async issuePrescription(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'STAFF' || String(authReq.user.role || '').toUpperCase() !== 'DOCTOR') {
+        res.status(403).json({ success: false, message: 'Only an authenticated doctor can issue a prescription.' });
+        return;
+      }
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (!doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+      const data = await telemedicineService.issuePrescription({
+        ...req.body,
+        hospitalId: String(authReq.user.hospitalId || ''),
+        sessionId: String(req.params.id || ''),
+        doctorId,
+      });
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+
+
+  public async verifyPrescription(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = await telemedicineService.verifyPrescription(String(req.params.verificationId || ''));
+      res.status(data.valid ? 200 : 404).json({ success: data.valid, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async dispensePrescription(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const role = String(authReq.user.role || '').toUpperCase();
+      if (authReq.user.userType !== 'STAFF' || !['PHARMACIST', 'HOSPITAL_ADMIN'].includes(role)) {
+        res.status(403).json({ success: false, message: 'Only authorized pharmacy staff can record dispensing.' });
+        return;
+      }
+      const data = await telemedicineService.dispensePrescription({
+        prescriptionId: String(req.params.id || ''),
+        hospitalId: String(authReq.user.hospitalId || ''),
+        pharmacistName: String(req.body.pharmacistName || authReq.user.name || ''),
+        pharmacyName: String(req.body.pharmacyName || ''),
+        notes: req.body.notes,
+      });
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async getSessionPrescriptions(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can view consultation prescriptions.' });
+        return;
+      }
+      const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (authReq.user.userType === 'STAFF' && !doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+      const data = await telemedicineService.getSessionPrescriptions(
+        String(req.params.id || ''),
+        String(authReq.user.hospitalId || ''),
+        patientId,
+        doctorId
+      );
+      res.status(200).json({ success: true, data });
     } catch (error) {
       next(error);
     }
