@@ -191,11 +191,7 @@ export class TelemedicineController {
         return;
       }
       if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
-        res.status(409).json({ success: false, message: 'This consultation has ended and its meeting is no longer available. Book a follow-up consultation to continue.' });
-        return;
-      }
-      if (session.consultationType === ConsultationType.CHAT) {
-        res.status(409).json({ success: false, message: 'This legacy session does not support calls. New consultations must be booked as voice or video. Secure messaging remains available while the session is active.' });
+        res.status(409).json({ success: false, message: 'This consultation has ended and its meeting is no longer available.' });
         return;
       }
 
@@ -262,6 +258,76 @@ export class TelemedicineController {
     }
   }
 
+  /**
+   * Mark a call as ringing/in progress when either assigned participant opens
+   * the meeting. This is separate from the clinical status endpoint so patients
+   * can initiate a call without gaining permission to edit clinical notes or
+   * complete/cancel the encounter.
+   */
+  public async markCallStarted(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const userType = authReq.user.userType;
+      if (userType !== 'PATIENT' && userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can start this call.' });
+        return;
+      }
+
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const id = String(req.params.id || '');
+      const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (userType === 'STAFF' && !doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+
+      const current = await telemedicineService.getSessionById(id, hospitalId, patientId, doctorId);
+      if (!current) {
+        res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
+        return;
+      }
+      if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(current.status)) {
+        res.status(409).json({ success: false, message: 'This consultation has ended and its call cannot be started.' });
+        return;
+      }
+      if (current.status !== ConsultationStatus.IN_PROGRESS && new Date(current.scheduledStartTime).getTime() > Date.now()) {
+        res.status(409).json({ success: false, message: 'This call is not available until its scheduled start time.' });
+        return;
+      }
+      if (current.status === ConsultationStatus.IN_PROGRESS) {
+        res.status(200).json({ success: true, data: current });
+        return;
+      }
+
+      try {
+        const updated = await telemedicineService.updateSessionStatus(
+          id,
+          hospitalId,
+          { status: ConsultationStatus.IN_PROGRESS },
+          patientId,
+          doctorId,
+        );
+        if (!updated) {
+          res.status(404).json({ success: false, message: 'Telemedicine session not found.' });
+          return;
+        }
+        res.status(200).json({ success: true, data: updated });
+      } catch (updateError) {
+        // Both participants can initialize Jitsi at nearly the same time. If
+        // the other request won the race, return the now-in-progress session.
+        const latest = await telemedicineService.getSessionById(id, hospitalId, patientId, doctorId);
+        if (latest?.status === ConsultationStatus.IN_PROGRESS) {
+          res.status(200).json({ success: true, data: latest });
+          return;
+        }
+        throw updateError;
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public async updateSessionStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -292,39 +358,6 @@ export class TelemedicineController {
       }
 
       res.status(200).json({ success: true, data: updated });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  public async recordCallSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const authReq = req as AuthenticatedRequest;
-      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
-        res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can record a call summary.' });
-        return;
-      }
-
-      const staffRecordId = await resolveStaffRecordId(authReq);
-      if (authReq.user.userType === 'STAFF' && !staffRecordId) {
-        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
-        return;
-      }
-
-      const senderModel = authReq.user.userType === 'PATIENT' ? 'Patient' : 'User';
-      const senderId = authReq.user.userType === 'PATIENT' ? String(authReq.user._id) : String(staffRecordId);
-      const data = await telemedicineService.recordCallSummary({
-        sessionId: String(req.params.id || ''),
-        hospitalId: String(authReq.user.hospitalId || ''),
-        senderId,
-        senderModel,
-        senderRole: String(authReq.user.userType || ''),
-        callId: String(req.body.callId || ''),
-        durationSeconds: Number(req.body.durationSeconds),
-        participantCount: Number(req.body.participantCount),
-      });
-
-      res.status(201).json({ success: true, data });
     } catch (error) {
       next(error);
     }
@@ -407,7 +440,6 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can upload consultation attachments.' });
         return;
       }
-      await telemedicineService.assertMessagingAllowed(sessionId, hospitalId, patientId, doctorId);
       await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
       if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
         res.status(503).json({ success: false, message: 'File storage is not configured.' });
@@ -530,10 +562,6 @@ export class TelemedicineController {
       const authReq = req as AuthenticatedRequest;
       const hospitalId = authReq.user.hospitalId;
       const sessionId = req.params.sessionId as string;
-      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
-        res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can view consultation messages.' });
-        return;
-      }
 
       const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
       const doctorId = await resolveStaffRecordId(authReq);

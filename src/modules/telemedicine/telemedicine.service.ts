@@ -1,5 +1,4 @@
 import { Types } from 'mongoose';
-import { ApiError } from '../../utils/ApiError.js';
 import { PatientModel } from '../patient/patient.model.js';
 import { Staff } from '../staff/staff.model.js';
 import { ProviderScheduleModel } from '../appointment/appointment.model.js';
@@ -14,7 +13,6 @@ import {
   ITelemedicineMessageDocument,
   ConsultationStatus,
   ConsultationType,
-  TelemedicineMessageType,
 } from './telemedicine.types.js';
 import { publishEhrResource } from '../patient/ehr.publisher.js';
 
@@ -29,9 +27,7 @@ export class TelemedicineService {
     if (Number.isNaN(scheduledStartTime.getTime()) || scheduledStartTime.getTime() < Date.now() - 60_000) {
       throw new Error('Choose a valid consultation date and time in the future.');
     }
-    if (input.consultationType !== ConsultationType.VIDEO && input.consultationType !== ConsultationType.VOICE) {
-      throw new ApiError(400, 'Choose either a video or voice consultation. Secure messaging is available with both options.');
-    }
+    if (!Object.values(ConsultationType).includes(input.consultationType)) throw new Error('Choose a valid consultation type.');
     const [patient, doctor] = await Promise.all([
       PatientModel.findOne({ _id: input.patientId, hospitalId: input.hospitalId, active: true }).select('_id').lean(),
       Staff.findOne({ _id: input.doctorId, hospitalId: input.hospitalId }).select('_id').lean(),
@@ -276,25 +272,10 @@ export class TelemedicineService {
     return updated;
   }
 
-  public async assertMessagingAllowed(sessionId: string, hospitalId: string, patientId?: string, doctorId?: string): Promise<void> {
-    if (!Types.ObjectId.isValid(sessionId)) throw new Error('Invalid consultation session.');
-    const session = await TelemedicineSessionModel.findOne({
-      _id: sessionId,
-      hospitalId,
-      ...(patientId ? { patientId } : {}),
-      ...(doctorId ? { doctorId } : {}),
-    }).select('consultationType status').lean();
-    if (!session) throw new Error('Consultation session not found.');
-    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
-      throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
-    }
-  }
-
   public async sendMessage(input: SendMessageInput): Promise<ITelemedicineMessageDocument> {
     if (!Types.ObjectId.isValid(input.sessionId) || !Types.ObjectId.isValid(input.senderId)) throw new Error('A valid session and sender are required.');
-    const session = await TelemedicineSessionModel.findOne({ _id: input.sessionId, hospitalId: input.hospitalId }).select('patientId doctorId consultationType status').lean();
+    const session = await TelemedicineSessionModel.findOne({ _id: input.sessionId, hospitalId: input.hospitalId }).select('patientId doctorId').lean();
     if (!session) throw new Error('Consultation session not found.');
-    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) throw new ApiError(409, 'This consultation has ended. Messages and attachments are no longer allowed. Book a follow-up consultation to continue.');
     if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) throw new Error('You are not the patient assigned to this consultation.');
     if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) throw new Error('Only the assigned doctor can message this patient through this consultation.');
     if (!input.messageText?.trim() && !input.attachmentUrl) throw new Error('Message text or an attachment is required.');
@@ -326,84 +307,6 @@ export class TelemedicineService {
     });
   }
 
-  public async recordCallSummary(input: {
-    sessionId: string;
-    hospitalId: string;
-    senderId: string;
-    senderModel: 'User' | 'Patient';
-    senderRole?: string;
-    callId: string;
-    durationSeconds: number;
-    participantCount: number;
-  }): Promise<ITelemedicineMessageDocument> {
-    if (![input.sessionId, input.hospitalId, input.senderId].every(Types.ObjectId.isValid)) {
-      throw new Error('A valid consultation session and participant are required.');
-    }
-    const callId = String(input.callId || '').trim();
-    if (!callId || callId.length > 100) throw new Error('A valid call reference is required.');
-
-    const durationSeconds = Math.max(0, Math.min(86400, Math.floor(Number(input.durationSeconds) || 0)));
-    const participantCount = Math.max(1, Math.min(20, Math.floor(Number(input.participantCount) || 1)));
-
-    const session = await TelemedicineSessionModel.findOne({
-      _id: input.sessionId,
-      hospitalId: input.hospitalId,
-    }).select('patientId doctorId consultationType status').lean();
-    if (!session) throw new Error('Consultation session not found.');
-    if (session.consultationType === ConsultationType.CHAT) throw new ApiError(409, 'This is a messages-only consultation. Voice and video calls are disabled.');
-    if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) throw new ApiError(409, 'This consultation has ended. New calls are not allowed. Book a follow-up consultation to continue.');
-
-    if (input.senderModel === 'Patient' && session.patientId.toString() !== input.senderId) {
-      throw new Error('You are not the patient assigned to this consultation.');
-    }
-    if (input.senderModel === 'User' && input.senderRole === 'STAFF' && session.doctorId.toString() !== input.senderId) {
-      throw new Error('Only the assigned doctor can record a call summary for this consultation.');
-    }
-    if (input.senderModel !== 'Patient' && input.senderRole !== 'STAFF') {
-      throw new Error('Only the assigned patient or staff member can record a call summary.');
-    }
-    if (session.consultationType !== ConsultationType.VIDEO && session.consultationType !== ConsultationType.VOICE) {
-      throw new Error('Call summaries are available only for voice and video consultations.');
-    }
-
-    const existing = await TelemedicineMessageModel.findOne({
-      sessionId: input.sessionId,
-      hospitalId: input.hospitalId,
-      'callSummary.callId': callId,
-    }).exec();
-    if (existing) return existing;
-
-    const callType = session.consultationType;
-    const durationLabel = durationSeconds < 60
-      ? `${durationSeconds} ${durationSeconds === 1 ? 'second' : 'seconds'}`
-      : `${Math.floor(durationSeconds / 60)} ${Math.floor(durationSeconds / 60) === 1 ? 'minute' : 'minutes'}${durationSeconds % 60 ? ` ${durationSeconds % 60} sec` : ''}`;
-    const participantLabel = `${participantCount} ${participantCount === 1 ? 'participant' : 'participants'} joined`;
-    const messageText = `${callType === ConsultationType.VIDEO ? 'Video' : 'Voice'} call · ${durationLabel} · ${participantLabel}`;
-
-    try {
-      return await TelemedicineMessageModel.create({
-        hospitalId: new Types.ObjectId(input.hospitalId),
-        sessionId: new Types.ObjectId(input.sessionId),
-        senderId: new Types.ObjectId(input.senderId),
-        senderModel: input.senderModel,
-        messageText,
-        messageType: TelemedicineMessageType.CALL_SUMMARY,
-        callSummary: { callId, callType, durationSeconds, participantCount },
-        sentAt: new Date(),
-      });
-    } catch (error) {
-      // If two participants submit the same call summary simultaneously, return
-      // the already-saved record instead of surfacing a duplicate-key error.
-      const duplicate = await TelemedicineMessageModel.findOne({
-        sessionId: input.sessionId,
-        hospitalId: input.hospitalId,
-        'callSummary.callId': callId,
-      }).exec();
-      if (duplicate) return duplicate;
-      throw error;
-    }
-  }
-
   public async getSessionMessages(
     sessionId: string,
     hospitalId: string,
@@ -422,6 +325,8 @@ export class TelemedicineService {
     hospitalId: string;
     sessionId: string;
     doctorId: string;
+    prescriberName?: string;
+    registrationNumber?: string;
     telemedicinePlatform?: string;
     diagnosis: string;
     clinicalNotes?: string;
@@ -435,6 +340,7 @@ export class TelemedicineService {
     refillAuthorized?: boolean;
     numberOfRefills?: number;
     controlledSubstance?: boolean;
+    prescriberAuthorizationId?: string;
     digitalSignature: string;
   }) {
     if (![input.hospitalId, input.sessionId, input.doctorId].every(Types.ObjectId.isValid)) {
@@ -466,27 +372,14 @@ export class TelemedicineService {
     ]);
     if (!patient || !doctor) throw new Error('The patient or prescriber record could not be verified.');
 
-    // Identity is derived only from the assigned session and trusted database
-    // records. Never accept doctor, patient, facility, or registration details
-    // supplied by the browser as authoritative prescription metadata.
     const registrations: any[] = Array.isArray((doctor as any).professionalRegistrations)
       ? (doctor as any).professionalRegistrations : [];
-    const now = new Date();
-    const verifiedRegistration = registrations.find((item) =>
-      item?.registrationNumber?.trim() &&
-      String(item?.status || '').toUpperCase() === 'VERIFIED' &&
-      (!item?.expiryDate || new Date(item.expiryDate).getTime() > now.getTime())
-    );
-    // Professional registration is optional in this workflow. When a verified,
-    // unexpired credential exists, include it in the prescription metadata;
-    // otherwise leave the registration fields blank and do not block issuance.
-    const registrationNumber = verifiedRegistration?.registrationNumber?.trim() || undefined;
+    const registrationNumber = input.registrationNumber?.trim() ||
+      registrations.find((item) => item?.registrationNumber)?.registrationNumber;
+    if (!registrationNumber) throw new Error('The prescriber must have a professional registration/license number on file.');
 
-    const prescriberName =
+    const prescriberName = input.prescriberName?.trim() ||
       `${(doctor as any).firstName || ''} ${(doctor as any).lastName || ''}`.trim();
-    if (!prescriberName) {
-      throw new Error('The assigned doctor profile must include the doctor’s full name before a prescription can be issued.');
-    }
     const issuedAt = new Date();
     const verificationId = `MHMS-${new Types.ObjectId().toString().toUpperCase()}`;
     const prescription = await TelemedicinePrescriptionModel.create({
@@ -516,7 +409,7 @@ export class TelemedicineService {
       refillAuthorized: Boolean(input.refillAuthorized),
       numberOfRefills: input.refillAuthorized ? Math.max(0, Math.min(12, Number(input.numberOfRefills) || 0)) : 0,
       controlledSubstance: Boolean(input.controlledSubstance),
-      prescriberAuthorizationId: registrationNumber,
+      prescriberAuthorizationId: input.prescriberAuthorizationId?.trim() || registrationNumber,
       digitalSignature: input.digitalSignature.trim(),
       signatureMethod: 'TYPED_NAME_ACKNOWLEDGMENT',
       signedAt: issuedAt,
@@ -570,27 +463,16 @@ export class TelemedicineService {
     return prescription;
   }
 
-
-
-  
   public async verifyPrescription(verificationId: string) {
     const value = String(verificationId || '').trim();
 
     if (!value || value.length > 100) {
-      throw new Error('A valid prescription verification ID is required.');
+      throw new Error(
+        'A valid prescription verification ID is required.'
+      );
     }
 
-    const prescriptionResult = await TelemedicinePrescriptionModel.findOne({
-      verificationId: value,
-    })
-      .select(
-        'verificationId status facilityName prescriberName professionalRegistrationNumber dateIssued'
-      )
-      .lean()
-      .exec();
-
-    // Normalize the result because the model typings may infer
-    // a document-or-array union.
+    // Explicitly describe the fields returned by the query.
     type PrescriptionVerificationRecord = {
       verificationId: string;
       status: string;
@@ -600,6 +482,18 @@ export class TelemedicineService {
       dateIssued?: Date;
     };
 
+    const prescriptionResult: unknown =
+      await TelemedicinePrescriptionModel.findOne({
+        verificationId: value,
+      })
+        .select(
+          'verificationId status facilityName prescriberName professionalRegistrationNumber dateIssued'
+        )
+        .lean()
+        .exec();
+
+    // Some project model typings infer findOne().lean() as a
+    // document-or-array union. Normalize it to a single record.
     const prescription = (
       Array.isArray(prescriptionResult)
         ? prescriptionResult[0]
@@ -610,7 +504,8 @@ export class TelemedicineService {
       return {
         valid: false,
         status: 'NOT_FOUND',
-        message: 'Prescription verification ID was not found.',
+        message:
+          'Prescription verification ID was not found.',
       };
     }
 
@@ -630,7 +525,6 @@ export class TelemedicineService {
         : 'This prescription has been cancelled.',
     };
   }
-
 
   public async dispensePrescription(input: {
     prescriptionId: string;
