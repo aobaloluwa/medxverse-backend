@@ -26,6 +26,9 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
     scheduledStartTime: { type: Date, required: true, index: true },
     joinedWaitingRoomAt: { type: Date },
     actualStartTime: { type: Date },
+    callStartedAt: { type: Date },
+    callEndedAt: { type: Date },
+    activeCallId: { type: String, trim: true },
     endTime: { type: Date },
     durationMinutes: { type: Number },
     meetingRoomId: { type: String, required: true, unique: true },
@@ -62,6 +65,13 @@ const TelemedicineMessageSchema = new Schema<ITelemedicineMessageDocument>(
     attachmentMimeType: { type: String, trim: true },
     attachmentSize: { type: Number, min: 0 },
     prescriptionId: { type: Schema.Types.ObjectId, ref: 'TelemedicinePrescription', index: true },
+    messageType: { type: String, enum: ['TEXT', 'CALL_STARTED', 'CALL_SUMMARY'], default: 'TEXT', index: true },
+    callSummary: {
+      callId: { type: String, trim: true },
+      callType: { type: String, enum: ['VIDEO', 'VOICE'] },
+      durationSeconds: { type: Number, min: 0 },
+      participantCount: { type: Number, min: 0 },
+    },
     sentAt: { type: Date, default: Date.now },
   },
   { timestamps: false }

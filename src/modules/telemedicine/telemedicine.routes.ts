@@ -37,6 +37,9 @@ router.patch('/sessions/:id/status', (req, res, next) =>
 router.post('/sessions/:id/call-started', (req, res, next) =>
   telemedicineController.markCallStarted(req, res, next)
 );
+router.post('/sessions/:id/call-summary', (req, res, next) =>
+  telemedicineController.recordCallSummary(req, res, next)
+);
 
 // Real-time Chat & In-Consultation Messaging
 router.post('/sessions/:id/prescriptions', (req, res, next) =>

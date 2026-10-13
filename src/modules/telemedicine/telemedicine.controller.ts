@@ -3,9 +3,11 @@ import { telemedicineService } from './telemedicine.service.js';
 import { StaffUser } from '../staff-auth/staff-user.model.js';
 import { Staff } from '../staff/staff.model.js';
 import jwt, { SignOptions } from 'jsonwebtoken';
+import { Types } from 'mongoose';
 import { env } from '../../config/env.js';
 import { ConsultationType, ConsultationStatus } from './telemedicine.types.js';
 import cloudinary from '../../config/cloudinary.js';
+import { TelemedicineMessageModel, TelemedicineSessionModel } from './telemedicine.model.js';
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -295,34 +297,127 @@ export class TelemedicineController {
         res.status(409).json({ success: false, message: 'This call is not available until its scheduled start time.' });
         return;
       }
-      if (current.status === ConsultationStatus.IN_PROGRESS) {
-        res.status(200).json({ success: true, data: current });
+      // Starting a call is a separate lifecycle from the clinical consultation.
+      // Move a waiting-room consultation to IN_PROGRESS when appropriate, but
+      // still record a new call attempt if the clinical session is already active.
+      if (current.status === ConsultationStatus.WAITING_ROOM) {
+        try {
+          await telemedicineService.updateSessionStatus(
+            id,
+            hospitalId,
+            { status: ConsultationStatus.IN_PROGRESS },
+            patientId,
+            doctorId,
+          );
+        } catch (updateError) {
+          const latest = await telemedicineService.getSessionById(id, hospitalId, patientId, doctorId);
+          if (latest?.status !== ConsultationStatus.IN_PROGRESS) throw updateError;
+        }
+      }
+
+      const requestedCallId = String(req.body?.callId || '').trim();
+      if (!requestedCallId || requestedCallId.length > 160) {
+        res.status(400).json({ success: false, message: 'A valid call ID is required.' });
         return;
       }
 
-      try {
-        const updated = await telemedicineService.updateSessionStatus(
-          id,
-          hospitalId,
-          { status: ConsultationStatus.IN_PROGRESS },
-          patientId,
-          doctorId,
-        );
-        if (!updated) {
-          res.status(404).json({ success: false, message: 'Telemedicine session not found.' });
-          return;
-        }
-        res.status(200).json({ success: true, data: updated });
-      } catch (updateError) {
-        // Both participants can initialize Jitsi at nearly the same time. If
-        // the other request won the race, return the now-in-progress session.
-        const latest = await telemedicineService.getSessionById(id, hospitalId, patientId, doctorId);
-        if (latest?.status === ConsultationStatus.IN_PROGRESS) {
-          res.status(200).json({ success: true, data: latest });
-          return;
-        }
-        throw updateError;
+      const existingCallIsActive = Boolean(
+        current.activeCallId && current.callStartedAt &&
+        (!current.callEndedAt || current.callEndedAt.getTime() < current.callStartedAt.getTime())
+      );
+      const callId = existingCallIsActive ? String(current.activeCallId) : requestedCallId;
+      const callStartedAt = existingCallIsActive ? current.callStartedAt! : new Date();
+      const updated = existingCallIsActive
+        ? current
+        : await TelemedicineSessionModel.findOneAndUpdate(
+            { _id: id, hospitalId, ...(patientId ? { patientId } : {}), ...(doctorId ? { doctorId } : {}) },
+            { $set: { callStartedAt, activeCallId: callId }, $unset: { callEndedAt: 1 } },
+            { new: true },
+          ).exec();
+      if (!updated) {
+        res.status(404).json({ success: false, message: 'Telemedicine session not found.' });
+        return;
       }
+
+      const callType = updated.consultationType === ConsultationType.VOICE ? 'VOICE' : 'VIDEO';
+      await TelemedicineMessageModel.findOneAndUpdate(
+        { hospitalId, sessionId: id, 'callSummary.callId': callId },
+        { $setOnInsert: {
+          hospitalId,
+          sessionId: id,
+          senderId: new Types.ObjectId(userType === 'STAFF' ? (doctorId || authReq.user._id) : authReq.user._id),
+          senderModel: userType === 'PATIENT' ? 'Patient' : 'User',
+          messageText: 'Calling…',
+          messageType: 'CALL_STARTED',
+          callSummary: { callId, callType, durationSeconds: 0, participantCount: 1 },
+          sentAt: callStartedAt,
+        } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).exec();
+
+      res.status(200).json({ success: true, data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Save the final summary for a call without completing the clinical consultation. */
+  public async recordCallSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const userType = authReq.user.userType;
+      if (userType !== 'PATIENT' && userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can end this call.' });
+        return;
+      }
+
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const sessionId = String(req.params.id || '');
+      const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (userType === 'STAFF' && !doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+
+      const session = await telemedicineService.getSessionById(sessionId, hospitalId, patientId, doctorId);
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
+        return;
+      }
+
+      const callId = String(req.body?.callId || '').trim();
+      const durationSeconds = Math.max(0, Math.floor(Number(req.body?.durationSeconds) || 0));
+      const participantCount = Math.max(1, Math.floor(Number(req.body?.participantCount) || 1));
+      if (!callId || callId.length > 160) {
+        res.status(400).json({ success: false, message: 'A valid call ID is required.' });
+        return;
+      }
+
+      const callType = session.consultationType === ConsultationType.VOICE ? 'VOICE' : 'VIDEO';
+      const summary = await TelemedicineMessageModel.findOneAndUpdate(
+        { hospitalId, sessionId, 'callSummary.callId': callId },
+        { $set: {
+          messageText: callType === 'VOICE' ? 'Voice call ended' : 'Video call ended',
+          messageType: 'CALL_SUMMARY',
+          callSummary: { callId, callType, durationSeconds, participantCount },
+          sentAt: new Date(),
+        }, $setOnInsert: {
+          hospitalId,
+          sessionId,
+          senderId: new Types.ObjectId(userType === 'STAFF' ? (doctorId || authReq.user._id) : authReq.user._id),
+          senderModel: userType === 'PATIENT' ? 'Patient' : 'User',
+        } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).exec();
+
+      // A late summary from an older call must not end a newer call.
+      await TelemedicineSessionModel.updateOne(
+        { _id: sessionId, hospitalId, activeCallId: callId, ...(patientId ? { patientId } : {}), ...(doctorId ? { doctorId } : {}) },
+        { $set: { callEndedAt: new Date() } },
+      ).exec();
+
+      res.status(200).json({ success: true, data: summary });
     } catch (error) {
       next(error);
     }

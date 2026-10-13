@@ -23,6 +23,9 @@ export interface ITelemedicineSession {
   scheduledStartTime: Date;
   joinedWaitingRoomAt?: Date;
   actualStartTime?: Date;
+  callStartedAt?: Date;
+  callEndedAt?: Date;
+  activeCallId?: string;
   endTime?: Date;
   durationMinutes?: number;
   meetingRoomId: string;
@@ -50,6 +53,8 @@ export interface ITelemedicineMessage {
   attachmentSize?: number;
   prescriptionId?: Types.ObjectId;
   sentAt: Date;
+  messageType?: 'TEXT' | 'CALL_STARTED' | 'CALL_SUMMARY';
+  callSummary?: { callId: string; callType: 'VIDEO' | 'VOICE'; durationSeconds: number; participantCount: number };
 }
 
 export interface ITelemedicineMessageDocument extends ITelemedicineMessage, Document {}
