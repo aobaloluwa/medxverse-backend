@@ -331,7 +331,7 @@ export class TelemedicineController {
         ? current
         : await TelemedicineSessionModel.findOneAndUpdate(
             { _id: id, hospitalId, ...(patientId ? { patientId } : {}), ...(doctorId ? { doctorId } : {}) },
-            { $set: { callStartedAt, activeCallId: callId }, $unset: { callEndedAt: 1 } },
+            { $set: { callStartedAt, activeCallId: callId, callStartedByUserType: userType }, $unset: { callEndedAt: 1 } },
             { new: true },
           ).exec();
       if (!updated) {

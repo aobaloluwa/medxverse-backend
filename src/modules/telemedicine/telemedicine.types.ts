@@ -26,6 +26,7 @@ export interface ITelemedicineSession {
   callStartedAt?: Date;
   callEndedAt?: Date;
   activeCallId?: string;
+  callStartedByUserType?: 'PATIENT' | 'STAFF';
   endTime?: Date;
   durationMinutes?: number;
   meetingRoomId: string;
