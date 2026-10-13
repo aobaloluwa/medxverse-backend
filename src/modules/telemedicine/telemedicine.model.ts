@@ -71,6 +71,7 @@ const TelemedicineMessageSchema = new Schema<ITelemedicineMessageDocument>(
       callType: { type: String, enum: ['VIDEO', 'VOICE'] },
       durationSeconds: { type: Number, min: 0 },
       participantCount: { type: Number, min: 0 },
+      missedCall: { type: Boolean, default: false },
     },
     sentAt: { type: Date, default: Date.now },
   },

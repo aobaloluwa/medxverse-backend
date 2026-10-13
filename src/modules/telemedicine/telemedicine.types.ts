@@ -54,7 +54,7 @@ export interface ITelemedicineMessage {
   prescriptionId?: Types.ObjectId;
   sentAt: Date;
   messageType?: 'TEXT' | 'CALL_STARTED' | 'CALL_SUMMARY';
-  callSummary?: { callId: string; callType: 'VIDEO' | 'VOICE'; durationSeconds: number; participantCount: number };
+  callSummary?: { callId: string; callType: 'VIDEO' | 'VOICE'; durationSeconds: number; participantCount: number; missedCall?: boolean };
 }
 
 export interface ITelemedicineMessageDocument extends ITelemedicineMessage, Document {}

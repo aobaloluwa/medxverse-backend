@@ -388,7 +388,8 @@ export class TelemedicineController {
 
       const callId = String(req.body?.callId || '').trim();
       const durationSeconds = Math.max(0, Math.floor(Number(req.body?.durationSeconds) || 0));
-      const participantCount = Math.max(1, Math.floor(Number(req.body?.participantCount) || 1));
+      const participantCount = Math.max(0, Math.floor(Number(req.body?.participantCount) || 0));
+      const missedCall = Boolean(req.body?.missedCall) || participantCount < 2;
       if (!callId || callId.length > 160) {
         res.status(400).json({ success: false, message: 'A valid call ID is required.' });
         return;
@@ -398,9 +399,11 @@ export class TelemedicineController {
       const summary = await TelemedicineMessageModel.findOneAndUpdate(
         { hospitalId, sessionId, 'callSummary.callId': callId },
         { $set: {
-          messageText: callType === 'VOICE' ? 'Voice call ended' : 'Video call ended',
+          messageText: missedCall
+            ? (callType === 'VOICE' ? 'Missed voice call' : 'Missed video call')
+            : (callType === 'VOICE' ? 'Voice call ended' : 'Video call ended'),
           messageType: 'CALL_SUMMARY',
-          callSummary: { callId, callType, durationSeconds, participantCount },
+          callSummary: { callId, callType, durationSeconds, participantCount, missedCall },
           sentAt: new Date(),
         }, $setOnInsert: {
           hospitalId,
