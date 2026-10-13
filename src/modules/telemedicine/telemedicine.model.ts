@@ -29,7 +29,7 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
     callStartedAt: { type: Date },
     callEndedAt: { type: Date },
     activeCallId: { type: String, trim: true },
-    callStartedByUserType: { type: String, enum: ['PATIENT', 'STAFF'] },
+    callInitiatorType: { type: String, enum: ['PATIENT', 'STAFF'] },
     endTime: { type: Date },
     durationMinutes: { type: Number },
     meetingRoomId: { type: String, required: true, unique: true },

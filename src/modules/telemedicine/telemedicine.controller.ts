@@ -5,7 +5,7 @@ import { Staff } from '../staff/staff.model.js';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { Types } from 'mongoose';
 import { env } from '../../config/env.js';
-import { ConsultationType, ConsultationStatus } from './telemedicine.types.js';
+import { ConsultationType, ConsultationStatus, type ITelemedicineMessageDocument } from './telemedicine.types.js';
 import cloudinary from '../../config/cloudinary.js';
 import { TelemedicineMessageModel, TelemedicineSessionModel } from './telemedicine.model.js';
 
@@ -321,23 +321,55 @@ export class TelemedicineController {
         return;
       }
 
-      const existingCallIsActive = Boolean(
-        current.activeCallId && current.callStartedAt &&
-        (!current.callEndedAt || current.callEndedAt.getTime() < current.callStartedAt.getTime())
-      );
-      const callId = existingCallIsActive ? String(current.activeCallId) : requestedCallId;
-      const callStartedAt = existingCallIsActive ? current.callStartedAt! : new Date();
-      const updated = existingCallIsActive
-        ? current
-        : await TelemedicineSessionModel.findOneAndUpdate(
-            { _id: id, hospitalId, ...(patientId ? { patientId } : {}), ...(doctorId ? { doctorId } : {}) },
-            { $set: { callStartedAt, activeCallId: callId, callStartedByUserType: userType }, $unset: { callEndedAt: 1 } },
-            { new: true },
-          ).exec();
+      const sessionScope = {
+        _id: id,
+        hospitalId,
+        ...(patientId ? { patientId } : {}),
+        ...(doctorId ? { doctorId } : {}),
+      };
+
+      // Atomically claim a new call attempt. If patient and staff open the call
+      // at nearly the same time, only one call ID is created; the second request
+      // reuses it instead of inserting a second CALL_STARTED chat item.
+      const callStartedAt = new Date();
+      let updated = await TelemedicineSessionModel.findOneAndUpdate(
+        {
+          ...sessionScope,
+          $or: [
+            { activeCallId: { $exists: false } },
+            { activeCallId: '' },
+            { callEndedAt: { $exists: true } },
+          ],
+        },
+        {
+          $set: {
+            callStartedAt,
+            activeCallId: requestedCallId,
+            callInitiatorType: userType,
+          },
+          $unset: { callEndedAt: 1 },
+        },
+        { new: true },
+      ).exec();
+
+      if (!updated) {
+        updated = await TelemedicineSessionModel.findOne(sessionScope).exec();
+      }
       if (!updated) {
         res.status(404).json({ success: false, message: 'Telemedicine session not found.' });
         return;
       }
+
+      const activeCallIsValid = Boolean(
+        updated.activeCallId && updated.callStartedAt &&
+        (!updated.callEndedAt || updated.callEndedAt.getTime() < updated.callStartedAt.getTime())
+      );
+      if (!activeCallIsValid) {
+        res.status(409).json({ success: false, message: 'This call has already ended. Start a new call attempt.' });
+        return;
+      }
+      const callId = String(updated.activeCallId);
+      const activeCallStartedAt = updated.callStartedAt || callStartedAt;
 
       const callType = updated.consultationType === ConsultationType.VOICE ? 'VOICE' : 'VIDEO';
       await TelemedicineMessageModel.findOneAndUpdate(
@@ -350,7 +382,7 @@ export class TelemedicineController {
           messageText: 'Calling…',
           messageType: 'CALL_STARTED',
           callSummary: { callId, callType, durationSeconds: 0, participantCount: 1 },
-          sentAt: callStartedAt,
+          sentAt: activeCallStartedAt,
         } },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       ).exec();
@@ -389,30 +421,59 @@ export class TelemedicineController {
       const callId = String(req.body?.callId || '').trim();
       const durationSeconds = Math.max(0, Math.floor(Number(req.body?.durationSeconds) || 0));
       const participantCount = Math.max(0, Math.floor(Number(req.body?.participantCount) || 0));
-      const missedCall = Boolean(req.body?.missedCall) || participantCount < 2;
+      // A call is missed only when the caller explicitly reports a missed
+      // outcome AND nobody joined (participantCount === 0). One participant or
+      // a positive duration is evidence that the call actually connected.
+      const missedCall = req.body?.missedCall === true && participantCount === 0;
       if (!callId || callId.length > 160) {
         res.status(400).json({ success: false, message: 'A valid call ID is required.' });
         return;
       }
 
       const callType = session.consultationType === ConsultationType.VOICE ? 'VOICE' : 'VIDEO';
-      const summary = await TelemedicineMessageModel.findOneAndUpdate(
-        { hospitalId, sessionId, 'callSummary.callId': callId },
-        { $set: {
-          messageText: missedCall
-            ? (callType === 'VOICE' ? 'Missed voice call' : 'Missed video call')
-            : (callType === 'VOICE' ? 'Voice call ended' : 'Video call ended'),
-          messageType: 'CALL_SUMMARY',
-          callSummary: { callId, callType, durationSeconds, participantCount, missedCall },
-          sentAt: new Date(),
-        }, $setOnInsert: {
-          hospitalId,
-          sessionId,
-          senderId: new Types.ObjectId(userType === 'STAFF' ? (doctorId || authReq.user._id) : authReq.user._id),
-          senderModel: userType === 'PATIENT' ? 'Patient' : 'User',
-        } },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      ).exec();
+      const existingSummary = await TelemedicineMessageModel.findOne({
+        hospitalId,
+        sessionId,
+        'callSummary.callId': callId,
+      }).exec();
+      const existingCallSummary = existingSummary?.callSummary;
+      const existingHasJoinEvidence = Boolean(
+        existingSummary?.messageType === 'CALL_SUMMARY' && existingCallSummary &&
+        !existingCallSummary.missedCall &&
+        (Number(existingCallSummary.durationSeconds || 0) > 0 || Number(existingCallSummary.participantCount || 0) >= 2)
+      );
+      const incomingHasJoinEvidence = !missedCall && (durationSeconds > 0 || participantCount >= 2);
+
+      // Both participants may submit a summary as they leave. Do not let a late
+      // stale `missedCall` from one browser overwrite a successful call summary
+      // recorded by the other browser. A later summary can improve the evidence,
+      // but cannot downgrade a connected call to a missed call.
+      let summary: ITelemedicineMessageDocument | null = existingSummary;
+      if (
+        existingSummary?.messageType === 'CALL_SUMMARY' &&
+        ((existingHasJoinEvidence && missedCall) ||
+          (existingCallSummary?.missedCall === true && !incomingHasJoinEvidence))
+      ) {
+        summary = existingSummary;
+      } else {
+        summary = await TelemedicineMessageModel.findOneAndUpdate(
+          { hospitalId, sessionId, 'callSummary.callId': callId },
+          { $set: {
+            messageText: missedCall
+              ? (callType === 'VOICE' ? 'Missed voice call' : 'Missed video call')
+              : (callType === 'VOICE' ? 'Voice call ended' : 'Video call ended'),
+            messageType: 'CALL_SUMMARY',
+            callSummary: { callId, callType, durationSeconds, participantCount, missedCall },
+            sentAt: new Date(),
+          }, $setOnInsert: {
+            hospitalId,
+            sessionId,
+            senderId: new Types.ObjectId(userType === 'STAFF' ? (doctorId || authReq.user._id) : authReq.user._id),
+            senderModel: userType === 'PATIENT' ? 'Patient' : 'User',
+          } },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        ).exec();
+      }
 
       // A late summary from an older call must not end a newer call.
       await TelemedicineSessionModel.updateOne(
