@@ -20,36 +20,36 @@ export class ObgynController {
   }
 
   static async summary(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; res.json({ success: true, data: await obgynService.summary(c.hospitalId) }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; res.json({ success: true, data: await obgynService.summary(c.hospitalId) }); } catch (e) { next(e); }
   }
   static async reports(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; res.json({ success: true, data: await obgynService.reports(c.hospitalId) }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; res.json({ success: true, data: await obgynService.reports(c.hospitalId) }); } catch (e) { next(e); }
   }
   static async create(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; const data = await obgynService.create(c.hospitalId, c.userId, req.body as CreateObgynRecordInput); res.status(201).json({ success: true, data }); }
+    try { const c = ObgynController.context(req, res); if (!c) return; const data = await obgynService.create(c.hospitalId, c.userId, req.body as CreateObgynRecordInput); res.status(201).json({ success: true, data }); }
     catch (e) { if (e instanceof Error && (e.message.includes('valid patient') || e.message.includes('not found') || e.message.includes('record type'))) { res.status(400).json({ success: false, message: e.message }); return; } next(e); }
   }
   static async list(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; const query = { ...req.query, highRisk: req.query.highRisk === 'true' } as unknown as ObgynListQuery; res.json({ success: true, data: await obgynService.list(c.hospitalId, query) }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; const query = { ...req.query, highRisk: req.query.highRisk === 'true' } as unknown as ObgynListQuery; res.json({ success: true, data: await obgynService.list(c.hospitalId, query) }); } catch (e) { next(e); }
   }
   static async getById(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; const data = await obgynService.getById(c.hospitalId, String(req.params.id)); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; const data = await obgynService.getById(c.hospitalId, String(req.params.id)); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
   }
-  static async addAnc(req: Request, res: Response, next: NextFunction) { return this.add(req, res, next, 'ancVisits'); }
-  static async addPnc(req: Request, res: Response, next: NextFunction) { return this.add(req, res, next, 'pncVisits'); }
-  static async addGynecology(req: Request, res: Response, next: NextFunction) { return this.add(req, res, next, 'gynecologyVisits'); }
-  static async addFamilyPlanning(req: Request, res: Response, next: NextFunction) { return this.add(req, res, next, 'familyPlanningRecords'); }
-  static async addReferral(req: Request, res: Response, next: NextFunction) { return this.add(req, res, next, 'referrals'); }
+  static async addAnc(req: Request, res: Response, next: NextFunction) { return ObgynController.add(req, res, next, 'ancVisits'); }
+  static async addPnc(req: Request, res: Response, next: NextFunction) { return ObgynController.add(req, res, next, 'pncVisits'); }
+  static async addGynecology(req: Request, res: Response, next: NextFunction) { return ObgynController.add(req, res, next, 'gynecologyVisits'); }
+  static async addFamilyPlanning(req: Request, res: Response, next: NextFunction) { return ObgynController.add(req, res, next, 'familyPlanningRecords'); }
+  static async addReferral(req: Request, res: Response, next: NextFunction) { return ObgynController.add(req, res, next, 'referrals'); }
   private static async add(req: Request, res: Response, next: NextFunction, field: 'ancVisits' | 'pncVisits' | 'gynecologyVisits' | 'familyPlanningRecords' | 'referrals') {
-    try { const c = this.context(req, res); if (!c) return; const data = await obgynService.addEntry(c.hospitalId, String(req.params.id), field, req.body || {}, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; const data = await obgynService.addEntry(c.hospitalId, String(req.params.id), field, req.body || {}, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
   }
   static async delivery(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; const data = await obgynService.recordDelivery(c.hospitalId, String(req.params.id), req.body || {}, c.userId); if (!data) { res.status(404).json({ success: false, message: 'Active pregnancy record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; const data = await obgynService.recordDelivery(c.hospitalId, String(req.params.id), req.body || {}, c.userId); if (!data) { res.status(404).json({ success: false, message: 'Active pregnancy record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
   }
   static async consent(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; if (typeof req.body?.consentToShare !== 'boolean') { res.status(400).json({ success: false, message: 'consentToShare must be true or false.' }); return; } const data = await obgynService.updateConsent(c.hospitalId, String(req.params.id), req.body.consentToShare, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; if (typeof req.body?.consentToShare !== 'boolean') { res.status(400).json({ success: false, message: 'consentToShare must be true or false.' }); return; } const data = await obgynService.updateConsent(c.hospitalId, String(req.params.id), req.body.consentToShare, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
   }
   static async riskFlags(req: Request, res: Response, next: NextFunction) {
-    try { const c = this.context(req, res); if (!c) return; if (!Array.isArray(req.body?.riskFlags)) { res.status(400).json({ success: false, message: 'riskFlags must be an array.' }); return; } const data = await obgynService.updateRiskFlags(c.hospitalId, String(req.params.id), req.body.riskFlags, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
+    try { const c = ObgynController.context(req, res); if (!c) return; if (!Array.isArray(req.body?.riskFlags)) { res.status(400).json({ success: false, message: 'riskFlags must be an array.' }); return; } const data = await obgynService.updateRiskFlags(c.hospitalId, String(req.params.id), req.body.riskFlags, c.userId); if (!data) { res.status(404).json({ success: false, message: 'O&G record not found.' }); return; } res.json({ success: true, data }); } catch (e) { next(e); }
   }
 }
