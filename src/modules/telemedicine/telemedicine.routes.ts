@@ -51,6 +51,9 @@ router.post('/sessions/:id/payment/initialize', (req, res, next) =>
 router.post('/sessions/:id/payment/verify', (req, res, next) =>
   telemedicineController.verifyPayment(req, res, next)
 );
+router.patch('/sessions/:id/accept', (req, res, next) =>
+  telemedicineController.acceptSessionOrder(req, res, next)
+);
 router.patch('/sessions/:id/status', (req, res, next) =>
   telemedicineController.updateSessionStatus(req, res, next)
 );

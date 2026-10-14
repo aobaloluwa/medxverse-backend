@@ -810,6 +810,46 @@ export class TelemedicineController {
     }
   }
 
+  /** Doctor accepts a patient's consultation booking without prematurely starting the clinical session. */
+  public async acceptSessionOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'STAFF' || String(authReq.user.role || '').toUpperCase() !== 'DOCTOR') {
+        res.status(403).json({ success: false, message: 'Only the assigned doctor can accept a consultation order.' });
+        return;
+      }
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (!doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const sessionId = String(req.params.id || '');
+      const session = await telemedicineService.getSessionById(sessionId, hospitalId, undefined, doctorId);
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Consultation order not found or not assigned to you.' });
+        return;
+      }
+      if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
+        res.status(409).json({ success: false, message: 'This consultation order is no longer active.' });
+        return;
+      }
+      const acceptedAt = (session as any).doctorAcceptedAt || new Date();
+      const updated = await TelemedicineSessionModel.findOneAndUpdate(
+        { _id: sessionId, hospitalId, doctorId },
+        { $set: { doctorAcceptedAt: acceptedAt } },
+        { new: true },
+      ).lean().exec();
+      if (!updated) {
+        res.status(404).json({ success: false, message: 'Consultation order could not be found.' });
+        return;
+      }
+      res.status(200).json({ success: true, message: 'Consultation order accepted.', data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public async updateSessionStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;

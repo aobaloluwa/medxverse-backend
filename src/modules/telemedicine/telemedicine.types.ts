@@ -20,6 +20,7 @@ export interface ITelemedicineSession {
   doctorId: Types.ObjectId;
   consultationType: ConsultationType;
   status: ConsultationStatus;
+  doctorAcceptedAt?: Date;
   scheduledStartTime: Date;
   appointmentId?: Types.ObjectId;
   joinedWaitingRoomAt?: Date;

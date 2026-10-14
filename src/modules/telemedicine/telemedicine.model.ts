@@ -23,6 +23,7 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
       default: ConsultationStatus.WAITING_ROOM,
       index: true,
     },
+    doctorAcceptedAt: { type: Date },
     scheduledStartTime: { type: Date, required: true, index: true },
     appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', index: true },
     joinedWaitingRoomAt: { type: Date },
