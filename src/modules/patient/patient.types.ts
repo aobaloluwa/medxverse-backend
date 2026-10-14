@@ -27,6 +27,7 @@ export type FhirResourceType =
   | 'Observation'
   | 'Condition'
   | 'MedicationStatement'
+  | 'ServiceRequest'
   | 'DocumentReference'
   | 'Procedure'
   | 'Claim';

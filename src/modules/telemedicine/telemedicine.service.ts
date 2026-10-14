@@ -16,6 +16,8 @@ import {
   ConsultationType,
 } from './telemedicine.types.js';
 import { publishEhrResource } from '../patient/ehr.publisher.js';
+import { PharmacyService } from '../pharmacy/pharmacy.service.js';
+import { PrescriptionSource } from '../pharmacy/pharmacy.types.js';
 
 export class TelemedicineService {
   public async createSession(
@@ -502,6 +504,30 @@ export class TelemedicineService {
       signedAt: issuedAt,
       verificationId,
       status: 'ISSUED',
+    });
+
+    // Mirror the signed telemedicine prescription into the existing HMS pharmacy queue.
+    // sourceRecordId makes this operation idempotent if a retry occurs.
+    await PharmacyService.createPrescription(input.hospitalId, {
+      patientId: String(session.patientId),
+      prescriberName,
+      source: PrescriptionSource.TELEMEDICINE,
+      sourceRecordId: String(prescription._id),
+      sourceSystem: 'MedXVerse Telemedicine',
+      department: 'Telemedicine',
+      medications: input.medications.map((medication) => ({
+        medicationName: medication.genericName,
+        genericName: medication.genericName,
+        strength: medication.strengthForm,
+        dose: medication.strengthForm,
+        route: medication.route,
+        frequency: medication.dosageFrequency,
+        duration: medication.duration,
+        quantity: Math.max(1, Number(String(medication.quantity).match(/\d+/)?.[0] || 1)),
+        instructions: `Prescribed quantity: ${medication.quantity}. ${medication.dosageFrequency}; duration: ${medication.duration}; route: ${medication.route}.`.trim(),
+        substitutionAllowed: Boolean(input.genericSubstitutionPermitted),
+      })),
+      notes: [input.diagnosis, input.clinicalNotes, input.patientInstructions, input.pharmacistInstructions].filter(Boolean).join('\n'),
     });
 
     // Publish a structured medication resource into the existing HMS unified EHR.

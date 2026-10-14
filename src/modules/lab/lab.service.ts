@@ -754,6 +754,34 @@ export class LabService {
           requestingUserId
         );
 
+        await publishEhrResource({
+          hospitalId,
+          patientId: String(order.patientId),
+          actorId: requestingUserId,
+          role: 'DOCTOR',
+          resourceType: 'ServiceRequest',
+          resourceId: String(order._id),
+          status: String(order.status),
+          department: 'Laboratory',
+          code: { system: 'MHMS-LAB-01', code: String(order.testCategory), display: order.testName },
+          resource: {
+            resourceType: 'ServiceRequest',
+            id: String(order._id),
+            status: String(order.status).toLowerCase(),
+            intent: 'order',
+            subject: { reference: `Patient/${String(order.patientId)}` },
+            identifier: [{ system: 'MHMS-LAB-ACCESSION', value: order.accessionNumber }],
+            code: { text: order.testName, coding: [{ code: String(order.testCategory), display: order.testName }], category: order.testCategory, panelName: order.panelName },
+            description: order.testName,
+            priority: String(order.priority).toLowerCase(),
+            specimen: { type: order.sampleType },
+            authoredOn: order.createdAt || new Date(),
+            note: order.notes,
+            sourceTelemedicineConsultationId: dto.consultationId,
+          },
+          reason: 'Laboratory requisition created in HMS and published to the patient EHR.',
+        });
+
         return await this.populateOrder(
           order
         );

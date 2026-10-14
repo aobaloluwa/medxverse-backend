@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { protect } from '../../middlewares/auth.middleware.js';
+import { requireAcceptedStaffInvitation } from '../staff-auth/staff-invitation.guard.js';
 import { CommunicationController } from './communication.controller.js';
 import multer from 'multer';
 
@@ -8,7 +9,7 @@ const chatUpload = multer({
   storage: multer.memoryStorage(),
   limits: { files: 1, fileSize: 10 * 1024 * 1024 },
 });
-router.use(protect);
+router.use(protect, requireAcceptedStaffInvitation);
 
 router.get('/inbox', CommunicationController.inbox);
 router.patch('/presence', CommunicationController.setPresence);

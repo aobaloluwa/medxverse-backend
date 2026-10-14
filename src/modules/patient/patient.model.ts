@@ -107,6 +107,7 @@ const EncounterSchema = ResourceBaseSchema.clone();
 const ObservationSchema = ResourceBaseSchema.clone();
 const ConditionSchema = ResourceBaseSchema.clone();
 const MedicationStatementSchema = ResourceBaseSchema.clone();
+const ServiceRequestSchema = ResourceBaseSchema.clone();
 const DocumentReferenceSchema = ResourceBaseSchema.clone();
 const ProcedureSchema = ResourceBaseSchema.clone();
 const ClaimSchema = ResourceBaseSchema.clone();
@@ -124,6 +125,7 @@ attachResourceType(EncounterSchema, 'Encounter');
 attachResourceType(ObservationSchema, 'Observation');
 attachResourceType(ConditionSchema, 'Condition');
 attachResourceType(MedicationStatementSchema, 'MedicationStatement');
+attachResourceType(ServiceRequestSchema, 'ServiceRequest');
 attachResourceType(DocumentReferenceSchema, 'DocumentReference');
 attachResourceType(ProcedureSchema, 'Procedure');
 attachResourceType(ClaimSchema, 'Claim');
@@ -134,7 +136,7 @@ const EhrEventSchema = new Schema<IEhrEventDocument>(
     patientId: { type: Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
     resourceType: {
       type: String,
-      enum: ['Patient', 'Encounter', 'Observation', 'Condition', 'MedicationStatement', 'DocumentReference', 'Procedure', 'Claim'],
+      enum: ['Patient', 'Encounter', 'Observation', 'Condition', 'MedicationStatement', 'ServiceRequest', 'DocumentReference', 'Procedure', 'Claim'],
       required: true,
       index: true,
     },
@@ -191,7 +193,7 @@ const ConsentRecordSchema = new Schema<IConsentRecordDocument>(
     status: { type: String, enum: ['ACTIVE', 'REVOKED', 'PENDING'], required: true, index: true },
     resourceTypes: {
       type: [String],
-      enum: ['Patient', 'Encounter', 'Observation', 'Condition', 'MedicationStatement', 'DocumentReference', 'Procedure', 'Claim', 'ALL'],
+      enum: ['Patient', 'Encounter', 'Observation', 'Condition', 'MedicationStatement', 'ServiceRequest', 'DocumentReference', 'Procedure', 'Claim', 'ALL'],
       required: true,
     },
     sensitivityCode: String,
@@ -229,6 +231,7 @@ export const ObservationModel = mongoose.models.Observation || model('Observatio
 export const ConditionModel = mongoose.models.Condition || model('Condition', ConditionSchema);
 export const MedicationStatementModel =
   mongoose.models.MedicationStatement || model('MedicationStatement', MedicationStatementSchema);
+export const ServiceRequestModel = mongoose.models.ServiceRequest || model('ServiceRequest', ServiceRequestSchema);
 export const DocumentReferenceModel =
   mongoose.models.DocumentReference || model('DocumentReference', DocumentReferenceSchema);
 export const ProcedureModel = mongoose.models.Procedure || model('Procedure', ProcedureSchema);

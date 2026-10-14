@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { telemedicineController } from './telemedicine.controller.js';
 import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireAcceptedStaffInvitation } from '../staff-auth/staff-invitation.guard.js';
 import multer from 'multer';
 
 const router = Router();
@@ -16,7 +17,7 @@ router.get('/prescriptions/verify/:verificationId', (req, res, next) =>
   telemedicineController.verifyPrescription(req, res, next)
 );
 
-router.use(authenticate);
+router.use(authenticate, requireAcceptedStaffInvitation);
 
 // Telemedicine directory for the authenticated hospital
 router.get('/directory', (req, res, next) =>

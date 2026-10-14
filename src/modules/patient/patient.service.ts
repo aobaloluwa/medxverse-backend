@@ -6,6 +6,7 @@ import {
   ObservationModel,
   ConditionModel,
   MedicationStatementModel,
+  ServiceRequestModel,
   DocumentReferenceModel,
   ProcedureModel,
   ClaimModel,
@@ -120,6 +121,7 @@ const RESOURCE_MODELS: Record<Exclude<FhirResourceType, 'Patient'>, any> = {
   Observation: ObservationModel,
   Condition: ConditionModel,
   MedicationStatement: MedicationStatementModel,
+  ServiceRequest: ServiceRequestModel,
   DocumentReference: DocumentReferenceModel,
   Procedure: ProcedureModel,
   Claim: ClaimModel,
@@ -1194,6 +1196,7 @@ export class PatientService {
       Observation: [],
       Condition: [],
       MedicationStatement: [],
+      ServiceRequest: [],
       DocumentReference: [],
       Procedure: [],
       Claim: [],
@@ -1639,6 +1642,7 @@ export class PatientService {
       ...findSection('surgery'), ...findSection('ot'), ...findSection('dental'),
     ].slice(0, 50);
     const recentLaboratory = [
+      ...sanitizedEhr.resources.ServiceRequest.map((resource) => this.resourceSummary('ServiceRequest', resource)),
       ...sanitizedEhr.resources.Observation.map((resource) => this.resourceSummary('Observation', resource)),
       ...findSection('laboratory'),
     ].slice(0, 50);
@@ -1804,6 +1808,7 @@ export class PatientService {
       Observation: [],
       Condition: [],
       MedicationStatement: [],
+      ServiceRequest: [],
       DocumentReference: [],
       Procedure: [],
       Claim: [],

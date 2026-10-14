@@ -47,6 +47,7 @@ export enum PrescriptionSource {
   EMAR = 'EMAR',
   EHR = 'EHR',
   CLINICIAN_ORDER = 'CLINICIAN_ORDER',
+  TELEMEDICINE = 'TELEMEDICINE',
   PHARMACY = 'PHARMACY',
 }
 
