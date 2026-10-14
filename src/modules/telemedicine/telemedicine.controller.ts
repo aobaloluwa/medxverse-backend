@@ -678,7 +678,7 @@ export class TelemedicineController {
             activeCallId: requestedCallId,
             callInitiatorType: userType,
           },
-          $unset: { callEndedAt: 1 },
+          $unset: { callEndedAt: 1, callAcceptedAt: 1 },
         },
         { new: true },
       ).exec();
