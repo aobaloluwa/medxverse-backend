@@ -507,6 +507,14 @@ export class TelemedicineController {
         res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
         return;
       }
+      if (!(session as any).doctorAcceptedAt) {
+        res.status(403).json({ success: false, message: 'The assigned doctor must accept this consultation order before the call can be joined.' });
+        return;
+      }
+      if (new Date(session.scheduledStartTime).getTime() > Date.now()) {
+        res.status(403).json({ success: false, message: `This consultation call is available at ${new Date(session.scheduledStartTime).toLocaleString()}.` });
+        return;
+      }
       if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) {
         res.status(402).json({ success: false, message: 'Complete and verify consultation payment before joining the call.' });
         return;
@@ -916,6 +924,7 @@ export class TelemedicineController {
           authReq.user.userType === 'STAFF' ? staffRecordId : undefined,
         );
         if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+        if (!(session as any).doctorAcceptedAt) { res.status(403).json({ success: false, message: 'The assigned doctor must accept this consultation order before messaging is enabled.' }); return; }
         if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before messaging the care team.' }); return; }
       }
 
@@ -980,6 +989,7 @@ export class TelemedicineController {
       }
       const attachmentSession = await telemedicineService.getSessionById(sessionId, hospitalId, patientId, doctorId);
       if (!attachmentSession) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+      if (!(attachmentSession as any).doctorAcceptedAt) { res.status(403).json({ success: false, message: 'The assigned doctor must accept this consultation order before sharing consultation attachments.' }); return; }
       if ((attachmentSession as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((attachmentSession as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before sharing consultation attachments.' }); return; }
       await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
       if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
