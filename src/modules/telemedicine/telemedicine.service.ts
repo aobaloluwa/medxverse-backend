@@ -30,7 +30,7 @@ export class TelemedicineService {
     if (!Object.values(ConsultationType).includes(input.consultationType)) throw new Error('Choose a valid consultation type.');
     const [patient, doctor] = await Promise.all([
       PatientModel.findOne({ _id: input.patientId, hospitalId: input.hospitalId, active: true }).select('_id').lean(),
-      Staff.findOne({ _id: input.doctorId, hospitalId: input.hospitalId }).select('_id').lean(),
+      Staff.findOne({ _id: input.doctorId, hospitalId: input.hospitalId }).select('_id consultationFee specialties').lean(),
     ]);
     if (!patient) throw new Error('The selected patient was not found in this hospital.');
     if (!doctor) throw new Error('The selected doctor was not found in this hospital.');
@@ -63,6 +63,10 @@ export class TelemedicineService {
 
     const roster = (Array.isArray(rosterResult) ? rosterResult[0] : rosterResult) as ProviderRoster | null | undefined;
 
+    if (input.paymentRequired && (!roster || !Array.isArray(roster.availability) || roster.availability.length === 0)) {
+      throw new Error('This doctor has not published availability yet. Please choose another doctor or contact the hospital.');
+    }
+
     if (roster && Array.isArray(roster.availability) && roster.availability.length > 0) {
       const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: roster.timezone || 'Africa/Lagos',
@@ -92,6 +96,12 @@ export class TelemedicineService {
       status: { $nin: [ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW] },
     }).select('_id').lean();
     if (conflictingSession) throw new Error('This doctor already has a consultation scheduled around that time. Choose another time.');
+    const configuredDefaultFee = Number(process.env.TELEMEDICINE_DEFAULT_FEE_NAIRA || 5000);
+    const doctorFee = Number((doctor as any)?.consultationFee);
+    const consultationFee = input.paymentRequired ? (Number.isFinite(doctorFee) && doctorFee > 0 ? doctorFee : configuredDefaultFee) : 0;
+    if (input.paymentRequired && (!Number.isFinite(consultationFee) || consultationFee <= 0)) {
+      throw new Error('This doctor does not have a valid virtual consultation fee configured. Please contact the hospital.');
+    }
     const meetingRoomId = `medxverse-${input.hospitalId}-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
     const meetingBaseUrl = (process.env.TELEMEDICINE_MEETING_BASE_URL || 'https://meet.jit.si').replace(/\/+$/, '');
     const meetingUrl = `${meetingBaseUrl}/${meetingRoomId}${input.consultationType === ConsultationType.VOICE ? '#config.startWithVideoMuted=true' : ''}`;
@@ -106,6 +116,9 @@ export class TelemedicineService {
       meetingUrl,
       status: ConsultationStatus.WAITING_ROOM,
       joinedWaitingRoomAt: new Date(),
+      paymentStatus: input.paymentRequired ? 'PENDING' : 'NOT_REQUIRED',
+      consultationFee,
+      paymentCurrency: 'NGN',
     });
 
     await publishEhrResource({
@@ -143,13 +156,32 @@ export class TelemedicineService {
         .lean()
         .exec() : Promise.resolve([]),
       Staff.find({ hospitalId, $or: [{ role: { $regex: 'doctor|physician|specialist|consultant', $options: 'i' } }, { specialization: { $exists: true, $ne: '' } }] })
-        .select('_id firstName lastName staffId role department specialization status')
+        .select('_id firstName lastName staffId role department specialization specialties status consultationFee')
         .sort({ lastName: 1, firstName: 1 })
         .limit(250)
         .lean()
         .exec(),
     ]);
-    return { patients, doctors };
+    const doctorItems = doctors as any[];
+    const scheduleResults = doctorItems.length ? await ProviderScheduleModel.find({
+      hospitalId, providerId: { $in: doctorItems.map((doctor) => doctor._id) }, active: true,
+    }).select('providerId availability timezone').lean().exec() : [];
+    const scheduleMap = new Map<string, any>();
+    for (const schedule of (Array.isArray(scheduleResults) ? scheduleResults : scheduleResults ? [scheduleResults] : []) as any[]) {
+      scheduleMap.set(String(schedule.providerId), schedule);
+    }
+    const defaultFee = Number(process.env.TELEMEDICINE_DEFAULT_FEE_NAIRA || 5000);
+    const safeDoctors = doctorItems.map((doctor) => {
+      const schedule = scheduleMap.get(String(doctor._id));
+      return {
+        ...doctor,
+        consultationFee: Number(doctor.consultationFee) > 0 ? Number(doctor.consultationFee) : defaultFee,
+        specialties: Array.isArray(doctor.specialties) ? doctor.specialties : [],
+        availability: Array.isArray(schedule?.availability) ? schedule.availability : [],
+        timezone: schedule?.timezone || 'Africa/Lagos',
+      };
+    });
+    return { patients, doctors: safeDoctors };
   }
 
   public async getSessions(

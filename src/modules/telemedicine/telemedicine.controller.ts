@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { telemedicineService } from './telemedicine.service.js';
 import { StaffUser } from '../staff-auth/staff-user.model.js';
 import { Staff } from '../staff/staff.model.js';
@@ -8,6 +9,13 @@ import { env } from '../../config/env.js';
 import { ConsultationType, ConsultationStatus, type ITelemedicineMessageDocument } from './telemedicine.types.js';
 import cloudinary from '../../config/cloudinary.js';
 import { TelemedicineMessageModel, TelemedicineSessionModel } from './telemedicine.model.js';
+import { PatientModel } from '../patient/patient.model.js';
+import { LabService } from '../lab/lab.service.js';
+import { LabOrderModel } from '../lab/lab.model.js';
+import type { CreateLabOrderDTO } from '../lab/lab.types.js';
+import { notificationService } from '../notifications/notifications.service.js';
+import { NotificationType, NotificationPriority, NotificationChannel } from '../notifications/notifications.types.js';
+import { sendEmail } from '../../utils/email.js';
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -55,7 +63,30 @@ export class TelemedicineController {
         scheduledStartTime,
         chiefComplaint,
         followUpOfSessionId,
+        paymentRequired: authReq.user.userType === 'PATIENT',
       });
+      // Notification delivery must never undo a successful appointment reservation.
+      try {
+        await notificationService.createNotification({
+          hospitalId: String(hospitalId), recipientId: String(patientId), type: NotificationType.APPOINTMENT,
+          priority: NotificationPriority.MEDIUM, channel: NotificationChannel.IN_APP,
+          title: 'Virtual consultation booked',
+          message: session.paymentStatus === 'PENDING' ? 'Your consultation is reserved. Complete payment to unlock chat and calls.' : 'Your virtual consultation has been booked.',
+          data: { sessionId: String(session._id), scheduledStartTime: session.scheduledStartTime, consultationType: session.consultationType, paymentStatus: session.paymentStatus },
+        });
+      } catch { /* notification is best-effort; booking remains authoritative */ }
+      try {
+        const patientResult = await PatientModel.findOne({ _id: patientId, hospitalId, active: true }).select('email firstName lastName').lean().exec();
+        const patient = (Array.isArray(patientResult) ? patientResult[0] : patientResult) as any;
+        if (patient?.email) {
+          const name = `${patient.firstName || ''} ${patient.lastName || ''}`.trim() || 'Patient';
+          await sendEmail({
+            to: String(patient.email), subject: 'MedXVerse virtual consultation confirmation',
+            text: `Hello ${name}, your ${session.consultationType.toLowerCase()} consultation is scheduled for ${new Date(session.scheduledStartTime).toLocaleString()}. ${session.paymentStatus === 'PENDING' ? 'Please complete payment in your patient portal before joining.' : 'Open your patient portal to view the consultation.'}`,
+            html: `<p>Hello ${name.replace(/[&<>"']/g, '')},</p><p>Your ${session.consultationType.toLowerCase()} consultation is scheduled for <strong>${new Date(session.scheduledStartTime).toLocaleString()}</strong>.</p><p>${session.paymentStatus === 'PENDING' ? 'Please complete payment in your patient portal before joining.' : 'Open your patient portal to view the consultation.'}</p>`,
+          });
+        }
+      } catch (emailError) { console.warn('[Telemedicine] Booking confirmation email was not sent:', emailError); }
 
       res.status(201).json({ success: true, data: session });
     } catch (error) {
@@ -133,6 +164,209 @@ export class TelemedicineController {
     }
   }
 
+  /** Paystack server webhook: signed provider events can activate payment even if the patient closes the checkout tab. */
+  public async paystackWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const secret = process.env.PAYSTACK_SECRET_KEY;
+      const signature = String(req.headers['x-paystack-signature'] || '');
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!secret || !signature || !rawBody?.length) {
+        res.status(401).json({ success: false, message: 'Invalid payment webhook signature.' });
+        return;
+      }
+      const expected = createHmac('sha512', secret).update(rawBody).digest('hex');
+      const expectedBuffer = Buffer.from(expected, 'hex');
+      const signatureBuffer = Buffer.from(signature, 'hex');
+      if (expectedBuffer.length !== signatureBuffer.length || !timingSafeEqual(expectedBuffer, signatureBuffer)) {
+        res.status(401).json({ success: false, message: 'Invalid payment webhook signature.' });
+        return;
+      }
+      const event = String(req.body?.event || '');
+      if (event !== 'charge.success') { res.status(200).json({ success: true, received: true }); return; }
+      const transaction = req.body?.data || {};
+      const metadata = transaction.metadata || {};
+      const sessionId = String(metadata.sessionId || '');
+      const hospitalId = String(metadata.hospitalId || '');
+      const patientId = String(metadata.patientId || '');
+      const reference = String(transaction.reference || '');
+      if (!Types.ObjectId.isValid(sessionId) || !Types.ObjectId.isValid(hospitalId) || !Types.ObjectId.isValid(patientId) || !reference) {
+        res.status(200).json({ success: true, received: true, ignored: true });
+        return;
+      }
+      const session = await TelemedicineSessionModel.findOne({ _id: sessionId, hospitalId, patientId, paymentStatus: 'PENDING', paymentReference: reference }).exec();
+      if (!session) { res.status(200).json({ success: true, received: true, alreadyProcessed: true }); return; }
+      const expectedAmount = Math.round(Number((session as any).consultationFee || 0) * 100);
+      const expectedCurrency = String((session as any).paymentCurrency || 'NGN').toUpperCase();
+      if (transaction.status !== 'success' || Number(transaction.amount) !== expectedAmount || String(transaction.currency || '').toUpperCase() !== expectedCurrency) {
+        res.status(200).json({ success: true, received: true, ignored: true });
+        return;
+      }
+      (session as any).paymentStatus = 'PAID';
+      (session as any).paymentPaidAt = new Date();
+      (session as any).paymentProvider = 'PAYSTACK';
+      await session.save();
+      try {
+        await notificationService.createNotification({
+          hospitalId, recipientId: patientId, type: NotificationType.BILLING, priority: NotificationPriority.MEDIUM, channel: NotificationChannel.IN_APP,
+          title: 'Consultation payment received', message: `Payment of ${expectedCurrency} ${(Number(transaction.amount) / 100).toLocaleString()} was verified for your virtual consultation.`,
+          data: { sessionId, paymentReference: reference, amount: Number(transaction.amount) / 100, currency: expectedCurrency },
+        });
+      } catch { /* payment state is authoritative even if notifications are unavailable */ }
+      try {
+        const patientResult = await PatientModel.findOne({ _id: patientId, hospitalId, active: true }).select('email firstName lastName').lean().exec();
+        const patient = (Array.isArray(patientResult) ? patientResult[0] : patientResult) as any;
+        if (patient?.email) {
+          const amount = Number(transaction.amount) / 100;
+          const name = `${patient.firstName || ''} ${patient.lastName || ''}`.trim() || 'Patient';
+          await sendEmail({ to: String(patient.email), subject: 'MedXVerse consultation payment receipt', text: `Hello ${name}, your payment of ${expectedCurrency} ${amount.toLocaleString()} was verified. Reference: ${reference}.`, html: `<p>Hello ${name.replace(/[&<>"']/g, '')},</p><p>Your consultation payment of <strong>${expectedCurrency} ${amount.toLocaleString()}</strong> has been verified.</p><p>Payment reference: <strong>${reference}</strong></p>` });
+        }
+      } catch (emailError) { console.warn('[Telemedicine] Webhook receipt email was not sent:', emailError); }
+      res.status(200).json({ success: true, received: true, paymentStatus: 'PAID' });
+    } catch (error) { next(error); }
+  }
+
+  /** Start a Paystack checkout for the authenticated patient’s own consultation. */
+  public async initializePayment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'PATIENT') {
+        res.status(403).json({ success: false, message: 'Only the patient who booked this consultation can initiate its payment.' });
+        return;
+      }
+      const sessionId = String(req.params.id || '');
+      const session = await telemedicineService.getSessionById(sessionId, String(authReq.user.hospitalId || ''), String(authReq.user._id || ''));
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Consultation not found for this patient.' });
+        return;
+      }
+      if (session.paymentStatus === 'PAID') {
+        res.status(200).json({ success: true, data: { paid: true, paymentStatus: 'PAID' } });
+        return;
+      }
+      if (session.paymentStatus !== 'PENDING') {
+        res.status(409).json({ success: false, message: 'This consultation does not require an outstanding payment.' });
+        return;
+      }
+      const secret = process.env.PAYSTACK_SECRET_KEY;
+      if (!secret) {
+        res.status(503).json({ success: false, message: 'Online payments are not configured yet. The hospital administrator must set PAYSTACK_SECRET_KEY on the backend.' });
+        return;
+      }
+      const patientResult = await PatientModel.findOne({ _id: authReq.user._id, hospitalId: authReq.user.hospitalId, active: true }).select('email firstName lastName').lean().exec();
+      const patient = (Array.isArray(patientResult) ? patientResult[0] : patientResult) as any;
+      const email = String(patient?.email || authReq.user.email || '').trim().toLowerCase();
+      if (!email) {
+        res.status(400).json({ success: false, message: 'A valid email address is required to make an online payment. Update the patient record with the hospital.' });
+        return;
+      }
+      const frontendBase = (process.env.PATIENT_PORTAL_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+      const callbackUrl = `${frontendBase}/portal/telemedicine?payment=return&sessionId=${encodeURIComponent(sessionId)}`;
+      const paymentResponse = await fetch('https://api.paystack.co/transaction/initialize', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          amount: Math.round(Number((session as any).consultationFee || 0) * 100),
+          currency: String((session as any).paymentCurrency || 'NGN'),
+          callback_url: callbackUrl,
+          metadata: { sessionId, hospitalId: String(authReq.user.hospitalId), patientId: String(authReq.user._id), consultationType: session.consultationType },
+        }),
+      });
+      const paymentPayload = await paymentResponse.json().catch(() => null) as any;
+      if (!paymentResponse.ok || paymentPayload?.status !== true || !paymentPayload?.data?.authorization_url || !paymentPayload?.data?.reference) {
+        res.status(502).json({ success: false, message: paymentPayload?.message || 'Paystack could not initialize the payment. Please try again.' });
+        return;
+      }
+      (session as any).paymentReference = String(paymentPayload.data.reference);
+      (session as any).paymentProvider = 'PAYSTACK';
+      await session.save();
+      res.status(200).json({ success: true, data: { authorizationUrl: paymentPayload.data.authorization_url, reference: paymentPayload.data.reference, amount: (session as any).consultationFee, currency: (session as any).paymentCurrency || 'NGN' } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Verify the payment directly with Paystack before unlocking any paid consultation. */
+  public async verifyPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'PATIENT') {
+        res.status(403).json({ success: false, message: 'Only the patient who booked this consultation can verify its payment.' });
+        return;
+      }
+      const sessionId = String(req.params.id || '');
+      const reference = String(req.body?.reference || req.query?.reference || '').trim();
+      if (!reference) {
+        res.status(400).json({ success: false, message: 'Paystack payment reference is required.' });
+        return;
+      }
+      const session = await telemedicineService.getSessionById(sessionId, String(authReq.user.hospitalId || ''), String(authReq.user._id || ''));
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Consultation not found for this patient.' });
+        return;
+      }
+      if (session.paymentStatus === 'PAID') {
+        res.status(200).json({ success: true, data: { paymentStatus: 'PAID', paid: true, sessionId } });
+        return;
+      }
+      if (session.paymentStatus !== 'PENDING' || String((session as any).paymentReference || '') !== reference) {
+        res.status(409).json({ success: false, message: 'This payment reference does not match the pending consultation payment.' });
+        return;
+      }
+      const secret = process.env.PAYSTACK_SECRET_KEY;
+      if (!secret) {
+        res.status(503).json({ success: false, message: 'Online payments are not configured on this hospital service.' });
+        return;
+      }
+      const verifyResponse = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+        headers: { Authorization: `Bearer ${secret}`, Accept: 'application/json' },
+      });
+      const verifyPayload = await verifyResponse.json().catch(() => null) as any;
+      const transaction = verifyPayload?.data;
+      const expectedAmount = Math.round(Number((session as any).consultationFee || 0) * 100);
+      const expectedCurrency = String((session as any).paymentCurrency || 'NGN').toUpperCase();
+      const metadata = transaction?.metadata || {};
+      const metadataMatches = String(metadata.sessionId || '') === sessionId
+        && String(metadata.patientId || '') === String(authReq.user._id)
+        && String(metadata.hospitalId || '') === String(authReq.user.hospitalId);
+      if (!verifyResponse.ok || verifyPayload?.status !== true || transaction?.status !== 'success'
+        || transaction?.reference !== reference || Number(transaction?.amount) !== expectedAmount
+        || String(transaction?.currency || '').toUpperCase() !== expectedCurrency || !metadataMatches) {
+        res.status(402).json({ success: false, message: 'Payment has not been confirmed. If your account was charged, wait a moment and retry verification.' });
+        return;
+      }
+      (session as any).paymentStatus = 'PAID';
+      (session as any).paymentPaidAt = new Date();
+      (session as any).paymentProvider = 'PAYSTACK';
+      await session.save();
+      try {
+        await notificationService.createNotification({
+          hospitalId: String(authReq.user.hospitalId), recipientId: String(authReq.user._id), type: NotificationType.BILLING,
+          priority: NotificationPriority.MEDIUM, channel: NotificationChannel.IN_APP,
+          title: 'Consultation payment received',
+          message: `Payment of ${expectedCurrency} ${(Number(transaction.amount) / 100).toLocaleString()} was verified for your virtual consultation.`,
+          data: { sessionId, paymentReference: reference, amount: Number(transaction.amount) / 100, currency: expectedCurrency },
+        });
+      } catch { /* receipt notification is best-effort; payment verification remains authoritative */ }
+      try {
+        const patientResult = await PatientModel.findOne({ _id: authReq.user._id, hospitalId: authReq.user.hospitalId, active: true }).select('email firstName lastName').lean().exec();
+        const patient = (Array.isArray(patientResult) ? patientResult[0] : patientResult) as any;
+        if (patient?.email) {
+          const name = `${patient.firstName || ''} ${patient.lastName || ''}`.trim() || 'Patient';
+          const amount = Number(transaction.amount) / 100;
+          await sendEmail({
+            to: String(patient.email), subject: 'MedXVerse consultation payment receipt',
+            text: `Hello ${name}, your payment of ${expectedCurrency} ${amount.toLocaleString()} was verified for consultation ${sessionId}. Reference: ${reference}.`,
+            html: `<p>Hello ${name.replace(/[&<>"']/g, '')},</p><p>Your consultation payment of <strong>${expectedCurrency} ${amount.toLocaleString()}</strong> has been verified.</p><p>Payment reference: <strong>${reference}</strong></p><p>Consultation: ${sessionId}</p>`,
+          });
+        }
+      } catch (emailError) { console.warn('[Telemedicine] Payment receipt email was not sent:', emailError); }
+      res.status(200).json({ success: true, data: { paymentStatus: 'PAID', paid: true, sessionId, reference, amount: Number(transaction.amount) / 100, currency: expectedCurrency } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /**
    * Creates a short-lived JaaS JWT for an authenticated participant.
    * The JaaS private key is used only on the backend and is never returned.
@@ -190,6 +424,10 @@ export class TelemedicineController {
 
       if (!session) {
         res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
+        return;
+      }
+      if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) {
+        res.status(402).json({ success: false, message: 'Complete and verify consultation payment before joining the call.' });
         return;
       }
       if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(session.status)) {
@@ -287,6 +525,10 @@ export class TelemedicineController {
       const current = await telemedicineService.getSessionById(id, hospitalId, patientId, doctorId);
       if (!current) {
         res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
+        return;
+      }
+      if ((current as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((current as any).paymentStatus))) {
+        res.status(402).json({ success: false, message: 'Complete and verify consultation payment before starting the call.' });
         return;
       }
       if ([ConsultationStatus.COMPLETED, ConsultationStatus.CANCELLED, ConsultationStatus.NO_SHOW].includes(current.status)) {
@@ -505,6 +747,13 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
         return;
       }
+      if (status === ConsultationStatus.IN_PROGRESS) {
+        const current = await telemedicineService.getSessionById(String(id), String(hospitalId || ''), patientId, doctorId);
+        if (current && (current as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((current as any).paymentStatus))) {
+          res.status(402).json({ success: false, message: 'Consultation payment must be verified before the clinical session can start.' });
+          return;
+        }
+      }
       const updated = await telemedicineService.updateSessionStatus(id, hospitalId, {
         status: status as ConsultationStatus,
         clinicalNotes: patientId ? undefined : clinicalNotes,
@@ -539,6 +788,15 @@ export class TelemedicineController {
       }
       // Sessions assign doctorId to Staff._id, not StaffUser._id.
       const senderId = authReq.user.userType === 'STAFF' ? staffRecordId! : authReq.user._id;
+      {
+        const session = await telemedicineService.getSessionById(
+          String(sessionId || ''), String(hospitalId || ''),
+          authReq.user.userType === 'PATIENT' ? String(authReq.user._id || '') : undefined,
+          authReq.user.userType === 'STAFF' ? staffRecordId : undefined,
+        );
+        if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+        if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before messaging the care team.' }); return; }
+      }
 
       const message = await telemedicineService.sendMessage({
         hospitalId,
@@ -599,6 +857,9 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Only the patient or assigned staff member can upload consultation attachments.' });
         return;
       }
+      const attachmentSession = await telemedicineService.getSessionById(sessionId, hospitalId, patientId, doctorId);
+      if (!attachmentSession) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+      if ((attachmentSession as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((attachmentSession as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before sharing consultation attachments.' }); return; }
       await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
       if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
         res.status(503).json({ success: false, message: 'File storage is not configured.' });
@@ -635,6 +896,87 @@ export class TelemedicineController {
     }
   }
 
+  /** Hospital-level payment overview for authorized administrators. */
+  public async getPaymentSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const role = String(authReq.user.role || '').toUpperCase();
+      if (!['HOSPITAL_ADMIN', 'ADMIN', 'SYSTEM_ADMIN'].includes(role) || authReq.user.userType === 'PATIENT') {
+        res.status(403).json({ success: false, message: 'Only authorized hospital administrators can view consultation payment summaries.' });
+        return;
+      }
+      const hospitalId = String(authReq.user.hospitalId || '');
+      if (!Types.ObjectId.isValid(hospitalId)) { res.status(400).json({ success: false, message: 'A valid hospital context is required.' }); return; }
+      const grouped = await TelemedicineSessionModel.aggregate([
+        { $match: { hospitalId: new Types.ObjectId(hospitalId), paymentStatus: { $in: ['PENDING', 'PAID', 'FAILED', 'REFUNDED'] } } },
+        { $group: { _id: '$paymentStatus', count: { $sum: 1 }, totalAmount: { $sum: { $ifNull: ['$consultationFee', 0] } } } },
+      ]);
+      const recent = await TelemedicineSessionModel.find({ hospitalId, paymentStatus: { $in: ['PENDING', 'PAID', 'FAILED', 'REFUNDED'] } })
+        .select('_id patientId doctorId consultationType scheduledStartTime paymentStatus consultationFee paymentCurrency paymentReference paymentPaidAt createdAt')
+        .populate('patientId', 'firstName lastName mrn')
+        .populate('doctorId', 'firstName lastName')
+        .sort({ updatedAt: -1 }).limit(50).lean().exec();
+      const summary = { pending: { count: 0, totalAmount: 0 }, paid: { count: 0, totalAmount: 0 }, failed: { count: 0, totalAmount: 0 }, refunded: { count: 0, totalAmount: 0 } };
+      for (const row of grouped as Array<{ _id: string; count: number; totalAmount: number }>) {
+        const key = String(row._id || '').toLowerCase() as keyof typeof summary;
+        if (summary[key]) summary[key] = { count: Number(row.count || 0), totalAmount: Number(row.totalAmount || 0) };
+      }
+      res.status(200).json({ success: true, data: { currency: 'NGN', summary, recent } });
+    } catch (error) { next(error); }
+  }
+
+  /** Create a laboratory requisition linked to this consultation and the existing HMS lab workflow. */
+  public async createLabRequest(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'STAFF' || String(authReq.user.role || '').toUpperCase() !== 'DOCTOR') {
+        res.status(403).json({ success: false, message: 'Only the assigned doctor can request investigations.' });
+        return;
+      }
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (!doctorId) { res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' }); return; }
+      const sessionId = String(req.params.id || '');
+      const session = await telemedicineService.getSessionById(sessionId, String(authReq.user.hospitalId || ''), undefined, doctorId);
+      if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not the assigned doctor.' }); return; }
+      if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Consultation payment must be verified before requesting investigations.' }); return; }
+      const body = req.body || {};
+      const dto: CreateLabOrderDTO = {
+        patientId: String((session.patientId as any)?._id || session.patientId),
+        doctorId,
+        consultationId: sessionId,
+        testName: String(body.testName || '').trim(),
+        testCategory: body.testCategory,
+        sampleType: String(body.sampleType || '').trim(),
+        priority: body.priority,
+        isStat: body.isStat === true,
+        notes: String(body.notes || '').trim() || undefined,
+      };
+      const order = await LabService.createOrder(String(authReq.user.hospitalId || ''), doctorId, dto);
+      res.status(201).json({ success: true, message: 'Investigation request sent to the hospital laboratory.', data: order });
+    } catch (error) { next(error); }
+  }
+
+  /** Return only requisitions linked to a consultation the caller is authorized to access. */
+  public async getLabRequests(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned care team can view investigation requests.' });
+        return;
+      }
+      const patientId = authReq.user.userType === 'PATIENT' ? String(authReq.user._id) : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (authReq.user.userType === 'STAFF' && !doctorId) { res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' }); return; }
+      const session = await telemedicineService.getSessionById(String(req.params.id || ''), String(authReq.user.hospitalId || ''), patientId, doctorId);
+      if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+      if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before accessing consultation investigations.' }); return; }
+      const orders = await LabOrderModel.find({ hospitalId: authReq.user.hospitalId, consultationId: session._id })
+        .select('_id testName testCategory panelName priority sampleType status createdAt updatedAt notes')
+        .sort({ createdAt: -1 }).lean().exec();
+      res.status(200).json({ success: true, data: orders });
+    } catch (error) { next(error); }
+  }
+
   public async issuePrescription(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -647,6 +989,9 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
         return;
       }
+      const consultation = await telemedicineService.getSessionById(String(req.params.id || ''), String(authReq.user.hospitalId || ''), undefined, doctorId);
+      if (!consultation) { res.status(404).json({ success: false, message: 'Consultation not found or you are not the assigned doctor.' }); return; }
+      if ((consultation as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((consultation as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Consultation payment must be verified before issuing a prescription.' }); return; }
       const data = await telemedicineService.issuePrescription({
         ...req.body,
         hospitalId: String(authReq.user.hospitalId || ''),
@@ -704,6 +1049,9 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
         return;
       }
+      const session = await telemedicineService.getSessionById(String(req.params.id || ''), String(authReq.user.hospitalId || ''), patientId, doctorId);
+      if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+      if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before accessing prescriptions.' }); return; }
       const data = await telemedicineService.getSessionPrescriptions(
         String(req.params.id || ''),
         String(authReq.user.hospitalId || ''),
@@ -721,6 +1069,10 @@ export class TelemedicineController {
       const authReq = req as AuthenticatedRequest;
       const hospitalId = authReq.user.hospitalId;
       const sessionId = req.params.sessionId as string;
+      if (authReq.user.userType !== 'PATIENT' && authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the patient or assigned doctor can view consultation messages.' });
+        return;
+      }
 
       const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
       const doctorId = await resolveStaffRecordId(authReq);
@@ -728,6 +1080,11 @@ export class TelemedicineController {
         res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
         return;
       }
+      const session = await telemedicineService.getSessionById(
+        String(sessionId || ''), String(hospitalId || ''), patientId, doctorId,
+      );
+      if (!session) { res.status(404).json({ success: false, message: 'Consultation not found or you are not assigned to it.' }); return; }
+      if ((session as any).paymentStatus && !['PAID', 'NOT_REQUIRED'].includes(String((session as any).paymentStatus))) { res.status(402).json({ success: false, message: 'Complete and verify consultation payment before opening consultation chat.' }); return; }
       const messages = await telemedicineService.getSessionMessages(sessionId, hospitalId, patientId, doctorId);
       res.status(200).json({ success: true, data: messages });
     } catch (error) {

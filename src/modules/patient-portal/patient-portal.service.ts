@@ -182,17 +182,18 @@ export class PatientPortalService {
     };
   }
 
-  static async login(input: { hospitalCode?: string; hospitalId?: string; email: string; password: string }) {
+  static async login(input: { hospitalCode?: string; hospitalId?: string; email?: string; patientId?: string; mrn?: string; password: string }) {
     const hospitalCode = String(input.hospitalCode || '').trim().toUpperCase();
     const requestedHospitalId = String(input.hospitalId || '').trim();
     const email = String(input.email || '').trim().toLowerCase();
+    const patientIdInput = String(input.patientId || input.mrn || '').trim();
     const password = String(input.password || '');
 
     // Hospital code is optional. The patient portal can resolve the hospital
     // from the authenticated portal account, or use hospitalId when the app
     // already knows the selected hospital from its dashboard context.
-    if (!email || !password) {
-      throw new Error('Email and password are required.');
+    if ((!email && !patientIdInput) || !password) {
+      throw new Error('Enter your Patient ID or email address and password.');
     }
 
     let hospitalId: Types.ObjectId | string | undefined;
@@ -220,11 +221,18 @@ export class PatientPortalService {
       hospitalId = new Types.ObjectId(requestedHospitalId);
     }
 
-    const portalAccountQuery: Record<string, any> = {
-      email,
-      active: true,
-    };
+    let portalAccountQuery: Record<string, any> = { active: true };
     if (hospitalId) portalAccountQuery.hospitalId = hospitalId;
+    if (patientIdInput) {
+      const patientQuery: Record<string, any> = { mrn: patientIdInput, active: true };
+      if (hospitalId) patientQuery.hospitalId = hospitalId;
+      const patientMatches = await PatientModel.find(patientQuery).select('_id hospitalId').limit(20).lean().exec();
+      const patientIds = (Array.isArray(patientMatches) ? patientMatches : patientMatches ? [patientMatches] : []).map((patient: any) => patient._id);
+      if (!patientIds.length) throw new Error('We could not find an active patient record with that Patient ID. Check the ID with your hospital.');
+      portalAccountQuery.patientId = { $in: patientIds };
+    } else {
+      portalAccountQuery.email = email;
+    }
 
     const portalAccountResults = await PatientPortalAccountModel.find(portalAccountQuery)
       .select('+password')
@@ -291,7 +299,7 @@ export class PatientPortalService {
         id: patient._id.toString(),
         hospitalId: hospital._id.toString(),
         name: `${patient.firstName} ${patient.lastName}`.trim(),
-        email: patient.email || email,
+        email: patient.email || email || portalAccount.email,
         mrn: patient.mrn,
       },
     };

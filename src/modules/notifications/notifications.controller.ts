@@ -83,6 +83,10 @@ export class NotificationController {
   ): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType === 'PATIENT') {
+        res.status(403).json({ success: false, message: 'Patients cannot create notifications for other users.' });
+        return;
+      }
       const hospitalId = authReq.user.hospitalId;
       const senderId = authReq.user._id;
 

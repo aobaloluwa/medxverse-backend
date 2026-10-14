@@ -35,9 +35,23 @@ export interface ITelemedicineSession {
   clinicalNotes?: string;
   recordingUrl?: string;
   followUpOfSessionId?: Types.ObjectId;
+
+  // Payment information
+  paymentStatus?: 'NOT_REQUIRED' | 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+  consultationFee?: number;
+  paymentCurrency?: string;
+  paymentReference?: string;
+  paymentPaidAt?: Date;
+  paymentProvider?: 'PAYSTACK';
+
+  // Consultation reminder tracking
+  reminder24hSentAt?: Date;
+  reminder1hSentAt?: Date;
 }
 
-export interface ITelemedicineSessionDocument extends ITelemedicineSession, Document {
+export interface ITelemedicineSessionDocument
+  extends ITelemedicineSession,
+    Document {
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,10 +69,18 @@ export interface ITelemedicineMessage {
   prescriptionId?: Types.ObjectId;
   sentAt: Date;
   messageType?: 'TEXT' | 'CALL_STARTED' | 'CALL_SUMMARY';
-  callSummary?: { callId: string; callType: 'VIDEO' | 'VOICE'; durationSeconds: number; participantCount: number; missedCall?: boolean };
+  callSummary?: {
+    callId: string;
+    callType: 'VIDEO' | 'VOICE';
+    durationSeconds: number;
+    participantCount: number;
+    missedCall?: boolean;
+  };
 }
 
-export interface ITelemedicineMessageDocument extends ITelemedicineMessage, Document {}
+export interface ITelemedicineMessageDocument
+  extends ITelemedicineMessage,
+    Document {}
 
 export interface CreateTelemedicineSessionInput {
   hospitalId: string;
@@ -68,6 +90,7 @@ export interface CreateTelemedicineSessionInput {
   scheduledStartTime: Date;
   chiefComplaint?: string;
   followUpOfSessionId?: string;
+  paymentRequired?: boolean;
 }
 
 export interface UpdateSessionStatusInput {

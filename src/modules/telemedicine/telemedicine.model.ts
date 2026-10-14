@@ -38,6 +38,14 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
     clinicalNotes: { type: String, trim: true },
     recordingUrl: { type: String },
     followUpOfSessionId: { type: Schema.Types.ObjectId, ref: 'TelemedicineSession', index: true },
+    paymentStatus: { type: String, enum: ['NOT_REQUIRED', 'PENDING', 'PAID', 'FAILED', 'REFUNDED'], default: 'NOT_REQUIRED', index: true },
+    consultationFee: { type: Number, min: 0, default: 0 },
+    paymentCurrency: { type: String, trim: true, uppercase: true, default: 'NGN' },
+    paymentReference: { type: String, trim: true, sparse: true, index: true },
+    paymentPaidAt: { type: Date },
+    paymentProvider: { type: String, enum: ['PAYSTACK'] },
+    reminder24hSentAt: { type: Date },
+    reminder1hSentAt: { type: Date },
   },
   { timestamps: true }
 );

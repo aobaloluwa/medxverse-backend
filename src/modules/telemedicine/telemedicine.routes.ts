@@ -6,6 +6,11 @@ import multer from 'multer';
 const router = Router();
 const chatAttachmentUpload = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: 10 * 1024 * 1024 } });
 
+// Paystack webhooks are authenticated with the provider's HMAC signature, not a patient JWT.
+router.post('/payments/paystack/webhook', (req, res, next) =>
+  telemedicineController.paystackWebhook(req, res, next)
+);
+
 // Minimal public QR/ID verification endpoint. It exposes only prescription validity metadata.
 router.get('/prescriptions/verify/:verificationId', (req, res, next) =>
   telemedicineController.verifyPrescription(req, res, next)
@@ -16,6 +21,11 @@ router.use(authenticate);
 // Telemedicine directory for the authenticated hospital
 router.get('/directory', (req, res, next) =>
   telemedicineController.getDirectory(req, res, next)
+);
+
+// Administrator-only payment dashboard data (controller enforces role and hospital scope).
+router.get('/payments/summary', (req, res, next) =>
+  telemedicineController.getPaymentSummary(req, res, next)
 );
 
 // Telemedicine Consultation Sessions
@@ -31,6 +41,12 @@ router.get('/sessions/:id', (req, res, next) =>
 router.get('/sessions/:id/meeting-token', (req, res, next) =>
   telemedicineController.getMeetingToken(req, res, next)
 );
+router.post('/sessions/:id/payment/initialize', (req, res, next) =>
+  telemedicineController.initializePayment(req, res, next)
+);
+router.post('/sessions/:id/payment/verify', (req, res, next) =>
+  telemedicineController.verifyPayment(req, res, next)
+);
 router.patch('/sessions/:id/status', (req, res, next) =>
   telemedicineController.updateSessionStatus(req, res, next)
 );
@@ -42,6 +58,12 @@ router.post('/sessions/:id/call-summary', (req, res, next) =>
 );
 
 // Real-time Chat & In-Consultation Messaging
+router.post('/sessions/:id/lab-requests', (req, res, next) =>
+  telemedicineController.createLabRequest(req, res, next)
+);
+router.get('/sessions/:id/lab-requests', (req, res, next) =>
+  telemedicineController.getLabRequests(req, res, next)
+);
 router.post('/sessions/:id/prescriptions', (req, res, next) =>
   telemedicineController.issuePrescription(req, res, next)
 );

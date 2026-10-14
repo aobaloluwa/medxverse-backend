@@ -402,6 +402,8 @@ export interface IStaff {
   classification: StaffClassification;
 
   professionalTitle?: string;
+  /** Virtual consultation fee in NGN. */
+  consultationFee?: number;
   jobTitle?: string;
 
   specialties: ISpecialty[];
@@ -491,6 +493,9 @@ export interface CreateStaffDTO {
   classification?: StaffClassification;
 
   professionalTitle?: string;
+
+  /** Virtual consultation fee in NGN, configured by the hospital. */
+  consultationFee?: number;
 
   jobTitle?: string;
 
