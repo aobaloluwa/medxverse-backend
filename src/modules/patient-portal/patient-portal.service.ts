@@ -306,6 +306,173 @@ export class PatientPortalService {
   }
 
 
+
+
+  static async getSettings(patientId: string, hospitalId: string, portalAccountId: string) {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId) || !Types.ObjectId.isValid(portalAccountId)) {
+      throw new Error('The authenticated patient account is invalid.');
+    }
+    const account = await PatientPortalAccountModel.findOne({
+      _id: new Types.ObjectId(portalAccountId),
+      patientId: new Types.ObjectId(patientId),
+      hospitalId: new Types.ObjectId(hospitalId),
+      active: true,
+    }).select('preferences email createdAt lastLoginAt').lean().exec();
+    if (!account) throw new Error('The patient portal account could not be found.');
+    const saved = (account as any).preferences || {};
+    return {
+      preferences: {
+        appointmentUpdates: saved.appointmentUpdates ?? true,
+        careTeamMessages: saved.careTeamMessages ?? true,
+        billingUpdates: saved.billingUpdates ?? true,
+        emailNotifications: saved.emailNotifications ?? true,
+        smsNotifications: saved.smsNotifications ?? false,
+      },
+      email: (account as any).email || '',
+      createdAt: (account as any).createdAt || null,
+      lastLoginAt: (account as any).lastLoginAt || null,
+    };
+  }
+
+  static async updateSettings(patientId: string, hospitalId: string, portalAccountId: string, input: {
+    preferences?: Partial<{ appointmentUpdates: boolean; careTeamMessages: boolean; billingUpdates: boolean; emailNotifications: boolean; smsNotifications: boolean }>;
+  }) {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId) || !Types.ObjectId.isValid(portalAccountId)) {
+      throw new Error('The authenticated patient account is invalid.');
+    }
+    const account = await PatientPortalAccountModel.findOne({
+      _id: new Types.ObjectId(portalAccountId),
+      patientId: new Types.ObjectId(patientId),
+      hospitalId: new Types.ObjectId(hospitalId),
+      active: true,
+    }).exec();
+    if (!account) throw new Error('The patient portal account could not be found.');
+    const current: any = account.preferences || {};
+    const incoming = input.preferences || {};
+    const keys = ['appointmentUpdates', 'careTeamMessages', 'billingUpdates', 'emailNotifications', 'smsNotifications'] as const;
+    for (const key of keys) {
+      if (incoming[key] !== undefined && typeof incoming[key] !== 'boolean') {
+        throw new Error(`The ${key} setting must be true or false.`);
+      }
+    }
+    account.preferences = {
+      appointmentUpdates: incoming.appointmentUpdates ?? current.appointmentUpdates ?? true,
+      careTeamMessages: incoming.careTeamMessages ?? current.careTeamMessages ?? true,
+      billingUpdates: incoming.billingUpdates ?? current.billingUpdates ?? true,
+      emailNotifications: incoming.emailNotifications ?? current.emailNotifications ?? true,
+      smsNotifications: incoming.smsNotifications ?? current.smsNotifications ?? false,
+    };
+    await account.save();
+    return this.getSettings(patientId, hospitalId, portalAccountId);
+  }
+
+  static async getProfile(patientId: string, hospitalId: string, portalAccountId = '') {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId)) {
+      throw new Error('The authenticated patient connection is invalid.');
+    }
+    const [patient, portalAccount] = await Promise.all([
+      PatientModel.findOne({ _id: patientId, hospitalId, active: true })
+        .select('firstName lastName email phone address dateOfBirth gender mrn universalPatientId maritalStatus occupation nextOfKin')
+        .lean().exec(),
+      PatientPortalAccountModel.findOne({
+        patientId: new Types.ObjectId(patientId),
+        hospitalId: new Types.ObjectId(hospitalId),
+        active: true,
+        ...(portalAccountId && Types.ObjectId.isValid(portalAccountId) ? { _id: new Types.ObjectId(portalAccountId) } : {}),
+      }).select('_id email createdAt lastLoginAt').lean().exec(),
+    ]);
+    if (!patient || !portalAccount) throw new Error('The linked patient profile could not be found.');
+    return {
+      id: String((patient as any)._id),
+      portalAccountId: String((portalAccount as any)._id),
+      firstName: (patient as any).firstName || '',
+      lastName: (patient as any).lastName || '',
+      name: `${(patient as any).firstName || ''} ${(patient as any).lastName || ''}`.trim(),
+      email: (patient as any).email || (portalAccount as any).email || '',
+      phone: (patient as any).phone || '',
+      address: (patient as any).address || '',
+      dateOfBirth: (patient as any).dateOfBirth || null,
+      gender: (patient as any).gender || '',
+      mrn: (patient as any).mrn || '',
+      universalPatientId: (patient as any).universalPatientId || '',
+      maritalStatus: (patient as any).maritalStatus || '',
+      occupation: (patient as any).occupation || '',
+      nextOfKin: (patient as any).nextOfKin || '',
+      createdAt: (portalAccount as any).createdAt || null,
+      lastLoginAt: (portalAccount as any).lastLoginAt || null,
+    };
+  }
+
+  static async updateProfile(patientId: string, hospitalId: string, portalAccountId: string, input: {
+    email?: string; phone?: string; address?: string;
+  }) {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId)) {
+      throw new Error('The authenticated patient connection is invalid.');
+    }
+    const patient = await PatientModel.findOne({ _id: patientId, hospitalId, active: true }).exec();
+    const portalAccount = await PatientPortalAccountModel.findOne({
+      patientId: new Types.ObjectId(patientId),
+      hospitalId: new Types.ObjectId(hospitalId),
+      active: true,
+      ...(portalAccountId && Types.ObjectId.isValid(portalAccountId) ? { _id: new Types.ObjectId(portalAccountId) } : {}),
+    }).exec();
+    if (!patient || !portalAccount) throw new Error('The linked patient profile could not be found.');
+
+    if (input.email !== undefined) {
+      const email = String(input.email || '').trim().toLowerCase();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address.');
+      const duplicate = await PatientPortalAccountModel.findOne({
+        hospitalId: new Types.ObjectId(hospitalId),
+        email,
+        _id: { $ne: portalAccount._id },
+      }).select('_id').lean().exec();
+      if (duplicate) throw new Error('That email is already used by another patient portal account at this hospital.');
+      portalAccount.email = email;
+      patient.email = email;
+    }
+    if (input.phone !== undefined) {
+      const phone = String(input.phone || '').trim();
+      if (!phone) throw new Error('Phone number is required.');
+      if (phone.length > 40) throw new Error('Phone number is too long.');
+      patient.phone = phone;
+    }
+    if (input.address !== undefined) {
+      const address = String(input.address || '').trim();
+      if (address.length > 300) throw new Error('Address must be 300 characters or fewer.');
+      patient.address = address;
+    }
+    await Promise.all([patient.save(), portalAccount.save()]);
+    return this.getProfile(patientId, hospitalId, String(portalAccount._id));
+  }
+
+  static async changePassword(patientId: string, hospitalId: string, portalAccountId: string, input: {
+    currentPassword?: string; newPassword?: string; confirmPassword?: string;
+  }) {
+    if (!Types.ObjectId.isValid(patientId) || !Types.ObjectId.isValid(hospitalId) || !Types.ObjectId.isValid(portalAccountId)) {
+      throw new Error('The authenticated patient account is invalid.');
+    }
+    const currentPassword = String(input.currentPassword || '');
+    const newPassword = String(input.newPassword || '');
+    const confirmPassword = String(input.confirmPassword || '');
+    if (!currentPassword || !newPassword || !confirmPassword) throw new Error('Complete all password fields.');
+    if (newPassword !== confirmPassword) throw new Error('New password and confirmation do not match.');
+    if (currentPassword === newPassword) throw new Error('Your new password must be different from your current password.');
+    if (!validPassword(newPassword)) throw new Error('Password must be at least 8 characters and include uppercase, lowercase, number and special character.');
+
+    const portalAccount = await PatientPortalAccountModel.findOne({
+      _id: new Types.ObjectId(portalAccountId),
+      patientId: new Types.ObjectId(patientId),
+      hospitalId: new Types.ObjectId(hospitalId),
+      active: true,
+    }).select('+password').exec();
+    if (!portalAccount) throw new Error('The patient portal account could not be found.');
+    const matches = await bcrypt.compare(currentPassword, portalAccount.password);
+    if (!matches) throw new Error('Your current password is incorrect.');
+    portalAccount.password = await bcrypt.hash(newPassword, 12);
+    await portalAccount.save();
+    return { changedAt: new Date().toISOString() };
+  }
+
   /**
    * Restores the hospital connection from the authenticated portal account.
    * The association is stored in MongoDB, not in browser/device state.

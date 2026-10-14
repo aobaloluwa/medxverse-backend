@@ -11,5 +11,10 @@ router.post('/register', authLimiter, (req, res) => PatientPortalController.regi
 router.post('/login', authLimiter, (req, res) => PatientPortalController.login(req, res));
 router.post('/link', authLimiter, (req, res) => PatientPortalController.link(req, res));
 router.get('/connection', authenticate, (req, res) => PatientPortalController.connection(req, res));
+router.get('/profile', authenticate, (req, res) => PatientPortalController.profile(req, res));
+router.patch('/profile', authenticate, (req, res) => PatientPortalController.updateProfile(req, res));
+router.get('/settings', authenticate, (req, res) => PatientPortalController.settings(req, res));
+router.patch('/settings', authenticate, (req, res) => PatientPortalController.updateSettings(req, res));
+router.post('/change-password', authenticate, (req, res) => PatientPortalController.changePassword(req, res));
 
 export default router;

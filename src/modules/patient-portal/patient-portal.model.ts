@@ -7,6 +7,13 @@ export interface IPatientPortalAccount extends Document {
   password: string;
   active: boolean;
   lastLoginAt?: Date;
+  preferences?: {
+    appointmentUpdates: boolean;
+    careTeamMessages: boolean;
+    billingUpdates: boolean;
+    emailNotifications: boolean;
+    smsNotifications: boolean;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -18,6 +25,13 @@ const PatientPortalAccountSchema = new Schema<IPatientPortalAccount>({
   password: { type: String, required: true, select: false },
   active: { type: Boolean, default: true, index: true },
   lastLoginAt: Date,
+  preferences: {
+    appointmentUpdates: { type: Boolean, default: true },
+    careTeamMessages: { type: Boolean, default: true },
+    billingUpdates: { type: Boolean, default: true },
+    emailNotifications: { type: Boolean, default: true },
+    smsNotifications: { type: Boolean, default: false },
+  },
 }, { timestamps: true });
 
 PatientPortalAccountSchema.index({ hospitalId: 1, email: 1 }, { unique: true });

@@ -81,7 +81,7 @@ export const authenticateAccount = (
     ) as JwtPayload;
 
     const requestPath = req.originalUrl.split('?')[0];
-    if (decoded.userType === 'PATIENT' && !requestPath.includes('/telemedicine') && !requestPath.includes('/patient-portal/auth/connection') && !requestPath.includes('/notifications')) {
+    if (decoded.userType === 'PATIENT' && !requestPath.includes('/telemedicine') && !requestPath.includes('/patient-portal/auth/connection') && !requestPath.includes('/patient-portal/auth/profile') && !requestPath.includes('/patient-portal/auth/change-password') && !requestPath.includes('/patient-portal/auth/settings') && !requestPath.includes('/notifications')) {
       res.status(403).json({ success: false, message: 'Patient portal tokens may only access authorized patient portal, telemedicine, and notification endpoints.' });
       return;
     }
