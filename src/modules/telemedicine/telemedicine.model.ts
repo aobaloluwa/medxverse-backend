@@ -29,6 +29,7 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
     joinedWaitingRoomAt: { type: Date },
     actualStartTime: { type: Date },
     callStartedAt: { type: Date },
+    callAcceptedAt: { type: Date },
     callEndedAt: { type: Date },
     activeCallId: { type: String, trim: true },
     callInitiatorType: { type: String, enum: ['PATIENT', 'STAFF'] },

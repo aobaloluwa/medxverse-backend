@@ -26,6 +26,7 @@ export interface ITelemedicineSession {
   joinedWaitingRoomAt?: Date;
   actualStartTime?: Date;
   callStartedAt?: Date;
+  callAcceptedAt?: Date;
   callEndedAt?: Date;
   activeCallId?: string;
   callInitiatorType?: 'PATIENT' | 'STAFF';

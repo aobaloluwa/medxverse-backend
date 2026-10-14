@@ -724,6 +724,79 @@ export class TelemedicineController {
     }
   }
 
+  /**
+   * The callee explicitly answers the ringing call. This lets both portals and
+   * the chat timeline distinguish a ringing attempt from an accepted call.
+   */
+  public async acceptCall(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const userType = authReq.user.userType;
+      if (userType !== 'PATIENT' && userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can answer this call.' });
+        return;
+      }
+
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const sessionId = String(req.params.id || '');
+      const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
+      const doctorId = await resolveStaffRecordId(authReq);
+      if (userType === 'STAFF' && !doctorId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+
+      const session = await telemedicineService.getSessionById(sessionId, hospitalId, patientId, doctorId);
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Telemedicine session not found or you are not assigned to it.' });
+        return;
+      }
+
+      const callId = String(req.body?.callId || session.activeCallId || '').trim();
+      if (!callId || callId.length > 160 || callId !== String(session.activeCallId || '')) {
+        res.status(409).json({ success: false, message: 'This incoming call is no longer active.' });
+        return;
+      }
+      if (session.callInitiatorType === userType) {
+        res.status(403).json({ success: false, message: 'The caller cannot answer their own call.' });
+        return;
+      }
+      if (!session.callStartedAt || (session.callEndedAt && session.callEndedAt.getTime() >= session.callStartedAt.getTime())) {
+        res.status(409).json({ success: false, message: 'This call has already ended.' });
+        return;
+      }
+
+      const scope = {
+        _id: sessionId,
+        hospitalId,
+        activeCallId: callId,
+        ...(patientId ? { patientId } : {}),
+        ...(doctorId ? { doctorId } : {}),
+        $or: [{ callEndedAt: { $exists: false } }, { callEndedAt: { $lt: session.callStartedAt } }],
+      };
+      const acceptedAt = new Date();
+      const updated = await TelemedicineSessionModel.findOneAndUpdate(
+        scope,
+        { $set: { callAcceptedAt: acceptedAt } },
+        { new: true },
+      ).exec();
+
+      if (!updated) {
+        res.status(409).json({ success: false, message: 'This call has already ended.' });
+        return;
+      }
+
+      await TelemedicineMessageModel.updateOne(
+        { hospitalId, sessionId, messageType: 'CALL_STARTED', 'callSummary.callId': callId },
+        { $set: { messageText: 'In call', 'callSummary.participantCount': 2 } },
+      ).exec();
+
+      res.status(200).json({ success: true, data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /** Save the final summary for a call without completing the clinical consultation. */
   public async recordCallSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -755,7 +828,8 @@ export class TelemedicineController {
       // A call is missed only when the caller explicitly reports a missed
       // outcome AND nobody joined (participantCount === 0). One participant or
       // a positive duration is evidence that the call actually connected.
-      const missedCall = req.body?.missedCall === true && participantCount === 0;
+      // A call is missed if the recipient never joins. The local caller alone is not a connected call.
+      const missedCall = req.body?.missedCall === true && participantCount < 2;
       if (!callId || callId.length > 160) {
         res.status(400).json({ success: false, message: 'A valid call ID is required.' });
         return;
@@ -773,7 +847,7 @@ export class TelemedicineController {
         !existingCallSummary.missedCall &&
         (Number(existingCallSummary.durationSeconds || 0) > 0 || Number(existingCallSummary.participantCount || 0) >= 2)
       );
-      const incomingHasJoinEvidence = !missedCall && (durationSeconds > 0 || participantCount >= 2);
+      const incomingHasJoinEvidence = !missedCall && participantCount >= 2;
 
       // Both participants may submit a summary as they leave. Do not let a late
       // stale `missedCall` from one browser overwrite a successful call summary
