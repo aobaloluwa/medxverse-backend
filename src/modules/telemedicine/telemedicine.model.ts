@@ -24,6 +24,7 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
       index: true,
     },
     scheduledStartTime: { type: Date, required: true, index: true },
+    appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', index: true },
     joinedWaitingRoomAt: { type: Date },
     actualStartTime: { type: Date },
     callStartedAt: { type: Date },
@@ -50,6 +51,7 @@ const TelemedicineSessionSchema = new Schema<ITelemedicineSessionDocument>(
   { timestamps: true }
 );
 
+TelemedicineSessionSchema.index({ hospitalId: 1, appointmentId: 1 }, { sparse: true });
 TelemedicineSessionSchema.index({ hospitalId: 1, scheduledStartTime: 1, status: 1 });
 
 export const TelemedicineSessionModel = model<ITelemedicineSessionDocument>(

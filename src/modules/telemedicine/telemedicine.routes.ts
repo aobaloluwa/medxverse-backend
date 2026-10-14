@@ -32,6 +32,9 @@ router.get('/payments/summary', (req, res, next) =>
 router.post('/sessions', (req, res, next) =>
   telemedicineController.createSession(req, res, next)
 );
+router.post('/sessions/from-appointment/:appointmentId', (req, res, next) =>
+  telemedicineController.createSessionFromAppointment(req, res, next)
+);
 router.get('/sessions', (req, res, next) =>
   telemedicineController.getSessions(req, res, next)
 );

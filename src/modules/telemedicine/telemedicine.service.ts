@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { PatientModel } from '../patient/patient.model.js';
 import { Staff } from '../staff/staff.model.js';
+import { StaffUser, StaffPresenceStatus } from '../staff-auth/staff-user.model.js';
 import { ProviderScheduleModel } from '../appointment/appointment.model.js';
 import { TelemedicineSessionModel, TelemedicineMessageModel, TelemedicinePrescriptionModel } from './telemedicine.model.js';
 import { Account } from '../auth/auth.model.js';
@@ -63,11 +64,11 @@ export class TelemedicineService {
 
     const roster = (Array.isArray(rosterResult) ? rosterResult[0] : rosterResult) as ProviderRoster | null | undefined;
 
-    if (input.paymentRequired && (!roster || !Array.isArray(roster.availability) || roster.availability.length === 0)) {
+    if (!input.skipAvailabilityValidation && input.paymentRequired && (!roster || !Array.isArray(roster.availability) || roster.availability.length === 0)) {
       throw new Error('This doctor has not published availability yet. Please choose another doctor or contact the hospital.');
     }
 
-    if (roster && Array.isArray(roster.availability) && roster.availability.length > 0) {
+    if (!input.skipAvailabilityValidation && roster && Array.isArray(roster.availability) && roster.availability.length > 0) {
       const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: roster.timezone || 'Africa/Lagos',
         weekday: 'short',
@@ -111,6 +112,8 @@ export class TelemedicineService {
       hospitalId: new Types.ObjectId(input.hospitalId),
       patientId: new Types.ObjectId(input.patientId),
       doctorId: new Types.ObjectId(input.doctorId),
+      ...(input.appointmentId ? { appointmentId: new Types.ObjectId(input.appointmentId) } : {}),
+      skipAvailabilityValidation: undefined,
       scheduledStartTime,
       meetingRoomId,
       meetingUrl,
@@ -155,28 +158,80 @@ export class TelemedicineService {
         .limit(250)
         .lean()
         .exec() : Promise.resolve([]),
-      Staff.find({ hospitalId, $or: [{ role: { $regex: 'doctor|physician|specialist|consultant', $options: 'i' } }, { specialization: { $exists: true, $ne: '' } }] })
-        .select('_id firstName lastName staffId role department specialization specialties status consultationFee')
+      Staff.find({
+        hospitalId,
+        isActive: true,
+        status: 'ACTIVE',
+        $or: [
+          { role: { $regex: 'doctor|physician|specialist|consultant', $options: 'i' } },
+          { specialization: { $exists: true, $ne: '' } },
+          { specialties: { $exists: true, $ne: [] } },
+        ],
+      })
+        .select('_id firstName lastName title professionalTitle staffId role department specialization specialties status consultationFee profilePhotoUrl contact qualifications professionalExperience')
         .sort({ lastName: 1, firstName: 1 })
         .limit(250)
         .lean()
         .exec(),
     ]);
     const doctorItems = doctors as any[];
-    const scheduleResults = doctorItems.length ? await ProviderScheduleModel.find({
-      hospitalId, providerId: { $in: doctorItems.map((doctor) => doctor._id) }, active: true,
-    }).select('providerId availability timezone').lean().exec() : [];
+    const doctorIds = doctorItems.map((doctor) => doctor._id);
+    const [scheduleResults, presenceResults] = await Promise.all([
+      doctorItems.length ? ProviderScheduleModel.find({
+        hospitalId, providerId: { $in: doctorIds }, active: true,
+      }).select('providerId availability timezone').lean().exec() : Promise.resolve([]),
+      doctorItems.length ? StaffUser.find({
+        hospitalId,
+        staffId: { $in: doctorIds },
+        isActive: true,
+        status: 'ACTIVE',
+      }).select('staffId presenceStatus lastSeenAt').lean().exec() : Promise.resolve([]),
+    ]);
     const scheduleMap = new Map<string, any>();
     for (const schedule of (Array.isArray(scheduleResults) ? scheduleResults : scheduleResults ? [scheduleResults] : []) as any[]) {
       scheduleMap.set(String(schedule.providerId), schedule);
     }
+    const presenceMap = new Map<string, any>();
+    for (const presence of (Array.isArray(presenceResults) ? presenceResults : presenceResults ? [presenceResults] : []) as any[]) {
+      presenceMap.set(String(presence.staffId), presence);
+    }
     const defaultFee = Number(process.env.TELEMEDICINE_DEFAULT_FEE_NAIRA || 5000);
+    const onlineFreshnessMs = 2 * 60 * 1000;
     const safeDoctors = doctorItems.map((doctor) => {
       const schedule = scheduleMap.get(String(doctor._id));
+      const presence = presenceMap.get(String(doctor._id));
+      const lastSeenAt = presence?.lastSeenAt ? new Date(presence.lastSeenAt).getTime() : 0;
+      const isOnline = presence?.presenceStatus === StaffPresenceStatus.ONLINE
+        && Number.isFinite(lastSeenAt)
+        && Date.now() - lastSeenAt <= onlineFreshnessMs;
+      const qualifications = Array.isArray(doctor.qualifications)
+        ? doctor.qualifications.map((item: any) => typeof item === 'string' ? item : item?.qualification).filter(Boolean)
+        : [];
+      const experienceYears = Array.isArray(doctor.professionalExperience)
+        ? doctor.professionalExperience.reduce((max: number, item: any) => Math.max(max, Number(item?.yearsOfExperience || 0)), 0)
+        : undefined;
       return {
-        ...doctor,
-        consultationFee: Number(doctor.consultationFee) > 0 ? Number(doctor.consultationFee) : defaultFee,
+        _id: String(doctor._id),
+        firstName: doctor.firstName,
+        lastName: doctor.lastName,
+        title: doctor.title || doctor.professionalTitle,
+        staffId: doctor.staffId,
+        role: doctor.role,
+        department: doctor.department,
+        specialization: doctor.specialization,
         specialties: Array.isArray(doctor.specialties) ? doctor.specialties : [],
+        status: doctor.status,
+        isActive: Boolean(doctor.isActive),
+        consultationFee: Number(doctor.consultationFee) > 0 ? Number(doctor.consultationFee) : defaultFee,
+        profilePhotoUrl: doctor.profilePhotoUrl || '',
+        email: doctor.contact?.email || '',
+        phone: doctor.contact?.phone || '',
+        qualifications,
+        yearsOfExperience: experienceYears,
+        isOnline,
+        online: isOnline,
+        presenceStatus: isOnline ? 'ONLINE' : 'OFFLINE',
+        lastSeenAt: presence?.lastSeenAt || null,
         availability: Array.isArray(schedule?.availability) ? schedule.availability : [],
         timezone: schedule?.timezone || 'Africa/Lagos',
       };

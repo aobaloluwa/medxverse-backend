@@ -10,6 +10,7 @@ import { ConsultationType, ConsultationStatus, type ITelemedicineMessageDocument
 import cloudinary from '../../config/cloudinary.js';
 import { TelemedicineMessageModel, TelemedicineSessionModel } from './telemedicine.model.js';
 import { PatientModel } from '../patient/patient.model.js';
+import { AppointmentModel, ProviderScheduleModel } from '../appointment/appointment.model.js';
 import { LabService } from '../lab/lab.service.js';
 import { LabOrderModel } from '../lab/lab.model.js';
 import type { CreateLabOrderDTO } from '../lab/lab.types.js';
@@ -46,7 +47,87 @@ async function resolveStaffRecordId(authReq: AuthenticatedRequest): Promise<stri
   return legacyStaff ? String(legacyStaff._id) : undefined;
 }
 
+function appointmentTimeToUtc(dateValue: Date | string, timeValue: string, timezone: string): Date {
+  const datePart = new Date(dateValue).toISOString().slice(0, 10);
+  const [year, month, day] = datePart.split('-').map(Number);
+  const [hour, minute] = String(timeValue || '00:00').split(':').map(Number);
+  const desiredWallTime = Date.UTC(year, month - 1, day, hour || 0, minute || 0, 0);
+  let guess = desiredWallTime;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone || 'Africa/Lagos',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(guess));
+    const value = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+    const representedWallTime = Date.UTC(value('year'), value('month') - 1, value('day'), value('hour'), value('minute'), 0);
+    const adjustment = desiredWallTime - representedWallTime;
+    guess += adjustment;
+    if (adjustment === 0) break;
+  }
+  return new Date(guess);
+}
+
 export class TelemedicineController {
+  public async createSessionFromAppointment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      if (authReq.user.userType !== 'STAFF') {
+        res.status(403).json({ success: false, message: 'Only the assigned staff member can start a telemedicine session from a hospital appointment.' });
+        return;
+      }
+      const hospitalId = String(authReq.user.hospitalId || '');
+      const staffRecordId = await resolveStaffRecordId(authReq);
+      if (!staffRecordId) {
+        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile.' });
+        return;
+      }
+      const appointmentId = String(req.params.appointmentId || '');
+      if (!Types.ObjectId.isValid(appointmentId)) {
+        res.status(400).json({ success: false, message: 'A valid appointment ID is required.' });
+        return;
+      }
+      const appointment = await AppointmentModel.findOne({
+        _id: appointmentId,
+        hospitalId,
+        doctorId: staffRecordId,
+      }).lean().exec() as any;
+      if (!appointment) {
+        res.status(404).json({ success: false, message: 'Appointment not found or it is not assigned to you.' });
+        return;
+      }
+      if (['CANCELLED', 'NO_SHOW'].includes(String(appointment.status))) {
+        res.status(409).json({ success: false, message: 'A cancelled or missed appointment cannot be opened as a consultation.' });
+        return;
+      }
+      const existing = await TelemedicineSessionModel.findOne({ hospitalId, appointmentId }).exec();
+      if (existing) {
+        res.status(200).json({ success: true, data: existing });
+        return;
+      }
+      const schedule = await ProviderScheduleModel.findOne({ hospitalId, providerId: staffRecordId, active: true })
+        .select('timezone').lean().exec() as any;
+      let scheduledStartTime = appointmentTimeToUtc(appointment.appointmentDate, appointment.startTime, schedule?.timezone || 'Africa/Lagos');
+      // Staff may open the consultation late; the appointment remains the source of truth,
+      // but the session service requires a non-past scheduled time.
+      if (scheduledStartTime.getTime() < Date.now() - 60_000) scheduledStartTime = new Date(Date.now() + 60_000);
+      const session = await telemedicineService.createSession({
+        hospitalId,
+        patientId: String(appointment.patientId),
+        doctorId: staffRecordId,
+        consultationType: ConsultationType.VIDEO,
+        scheduledStartTime,
+        chiefComplaint: String(appointment.reason || appointment.notes || 'Hospital appointment'),
+        appointmentId,
+        paymentRequired: false,
+        skipAvailabilityValidation: true,
+      });
+      res.status(201).json({ success: true, data: session });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public async createSession(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;

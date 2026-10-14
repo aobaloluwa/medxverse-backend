@@ -10,7 +10,7 @@ import {
   StaffInvitation,
   StaffInvitationStatus,
 } from './staff-invitation.model.js';
-import { StaffUser } from './staff-user.model.js';
+import { StaffUser, StaffPresenceStatus } from './staff-user.model.js';
 import {
   AcceptStaffInvitationDTO,
   StaffAuthResponse,
@@ -439,6 +439,8 @@ If you did not expect this invitation, please contact your hospital administrato
     }
 
     user.lastLoginAt = new Date();
+    user.presenceStatus = StaffPresenceStatus.ONLINE;
+    user.lastSeenAt = new Date();
     await user.save();
 
     return this.issueStaffToken(user._id.toString());

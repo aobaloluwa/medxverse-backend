@@ -21,6 +21,7 @@ export interface ITelemedicineSession {
   consultationType: ConsultationType;
   status: ConsultationStatus;
   scheduledStartTime: Date;
+  appointmentId?: Types.ObjectId;
   joinedWaitingRoomAt?: Date;
   actualStartTime?: Date;
   callStartedAt?: Date;
@@ -90,7 +91,10 @@ export interface CreateTelemedicineSessionInput {
   scheduledStartTime: Date;
   chiefComplaint?: string;
   followUpOfSessionId?: string;
+  appointmentId?: string;
   paymentRequired?: boolean;
+  /** Internal trusted workflow flag; never read directly from a client request. */
+  skipAvailabilityValidation?: boolean;
 }
 
 export interface UpdateSessionStatusInput {
