@@ -35,6 +35,7 @@ app.use(
       'Content-Type',
       'Authorization',
       'Idempotency-Key',
+      'X-Emergency-Access-Token',
     ],
   }),
 );
