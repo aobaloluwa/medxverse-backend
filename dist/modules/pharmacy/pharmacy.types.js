@@ -46,6 +46,7 @@ export var PrescriptionSource;
     PrescriptionSource["EMAR"] = "EMAR";
     PrescriptionSource["EHR"] = "EHR";
     PrescriptionSource["CLINICIAN_ORDER"] = "CLINICIAN_ORDER";
+    PrescriptionSource["TELEMEDICINE"] = "TELEMEDICINE";
     PrescriptionSource["PHARMACY"] = "PHARMACY";
 })(PrescriptionSource || (PrescriptionSource = {}));
 export var ScreeningStatus;

@@ -348,6 +348,8 @@ const StaffSchema = new Schema({
         index: true,
     },
     professionalTitle: String,
+    // Fee charged in NGN for patient-initiated virtual consultations.
+    consultationFee: { type: Number, min: 0 },
     jobTitle: String,
     specialties: {
         type: [SpecialtySchema],

@@ -35,6 +35,7 @@ import telemedicineRoutes from '../modules/telemedicine/telemedicine.routes.js';
 import patientPortalRoutes from '../modules/patient-portal/patient-portal.routes.js';
 import icuRoutes from '../modules/icu/icu.routes.js';
 import globalSearchRoutes from '../modules/global-search/global-search.routes.js';
+import medxRescueRoutes from '../modules/medxrescue/medxrescue.routes.js';
 
 // hmo portal
 import hmsDashboardRoutes from '../modules/hms-dashboard/hms-dashboard.routes.js';
@@ -63,6 +64,7 @@ v1Router.use('/patient-portal/auth', patientPortalRoutes);
 v1Router.use('/auth/staff', staffAuthRoutes);
 v1Router.use('/communication', communicationRoutes);
 v1Router.use('/search', globalSearchRoutes);
+v1Router.use('/medxrescue', medxRescueRoutes);
 v1Router.use('/staff-work', staffWorkRoutes);
 v1Router.use('/staff-notifications', staffNotificationsRoutes);
 v1Router.use('/patient-assignments', patientAssignmentRoutes);

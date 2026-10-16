@@ -7,7 +7,7 @@ import { JwtUtils } from '../../utils/jwt.js';
 import { sendEmail } from '../../utils/email.js';
 import { env } from '../../config/env.js';
 import { StaffInvitation, StaffInvitationStatus, } from './staff-invitation.model.js';
-import { StaffUser } from './staff-user.model.js';
+import { StaffUser, StaffPresenceStatus } from './staff-user.model.js';
 import { StaffUserStatus, } from './staff-auth.types.js';
 function hashToken(token) {
     return crypto.createHash('sha256').update(token).digest('hex');
@@ -304,6 +304,8 @@ If you did not expect this invitation, please contact your hospital administrato
             throw new Error('Invalid email or password');
         }
         user.lastLoginAt = new Date();
+        user.presenceStatus = StaffPresenceStatus.ONLINE;
+        user.lastSeenAt = new Date();
         await user.save();
         return this.issueStaffToken(user._id.toString());
     }

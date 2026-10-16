@@ -46,6 +46,10 @@ export class NotificationController {
     async createNotification(req, res, next) {
         try {
             const authReq = req;
+            if (authReq.user.userType === 'PATIENT') {
+                res.status(403).json({ success: false, message: 'Patients cannot create notifications for other users.' });
+                return;
+            }
             const hospitalId = authReq.user.hospitalId;
             const senderId = authReq.user._id;
             const { recipientId, type, priority, channel, title, message, data, expiresAt } = req.body;

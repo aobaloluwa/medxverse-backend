@@ -408,6 +408,28 @@ export class CommunicationService {
             throw new Error('Message body is required');
         if (type !== MessageType.TEXT && !attachments.length && !body?.trim())
             throw new Error('Message content or attachment is required');
+        if (!Array.isArray(attachments) || attachments.length > 5)
+            throw new Error('You can attach a maximum of 5 files per message.');
+        const allowedAttachmentTypes = new Set([
+            'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+            'application/pdf', 'text/plain', 'text/csv', 'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-powerpoint',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'application/rtf',
+        ]);
+        for (const attachment of attachments) {
+            if (!attachment || typeof attachment.url !== 'string' || !attachment.url.startsWith('https://res.cloudinary.com/')) {
+                throw new Error('Each attachment must be uploaded through MedXVerse file storage first.');
+            }
+            if (!attachment.name || !allowedAttachmentTypes.has(String(attachment.mimeType || '').toLowerCase())) {
+                throw new Error('An attachment has an unsupported file type or missing filename.');
+            }
+            if (Number(attachment.size || 0) > 10 * 1024 * 1024)
+                throw new Error('Each attachment must be 10 MB or smaller.');
+        }
         const sender = await ensureStaffUserInHospital(senderId, hospitalId);
         const message = await Message.create({
             hospitalId,

@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import mongoose, { Schema, model } from 'mongoose';
 import { ConsultationType, ConsultationStatus, } from './telemedicine.types.js';
 const TelemedicineSessionSchema = new Schema({
     hospitalId: { type: Schema.Types.ObjectId, ref: 'Account', required: true, index: true },
@@ -16,9 +16,16 @@ const TelemedicineSessionSchema = new Schema({
         default: ConsultationStatus.WAITING_ROOM,
         index: true,
     },
+    doctorAcceptedAt: { type: Date },
     scheduledStartTime: { type: Date, required: true, index: true },
+    appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', index: true },
     joinedWaitingRoomAt: { type: Date },
     actualStartTime: { type: Date },
+    callStartedAt: { type: Date },
+    callAcceptedAt: { type: Date },
+    callEndedAt: { type: Date },
+    activeCallId: { type: String, trim: true },
+    callInitiatorType: { type: String, enum: ['PATIENT', 'STAFF'] },
     endTime: { type: Date },
     durationMinutes: { type: Number },
     meetingRoomId: { type: String, required: true, unique: true },
@@ -27,7 +34,16 @@ const TelemedicineSessionSchema = new Schema({
     clinicalNotes: { type: String, trim: true },
     recordingUrl: { type: String },
     followUpOfSessionId: { type: Schema.Types.ObjectId, ref: 'TelemedicineSession', index: true },
+    paymentStatus: { type: String, enum: ['NOT_REQUIRED', 'PENDING', 'PAID', 'FAILED', 'REFUNDED'], default: 'NOT_REQUIRED', index: true },
+    consultationFee: { type: Number, min: 0, default: 0 },
+    paymentCurrency: { type: String, trim: true, uppercase: true, default: 'NGN' },
+    paymentReference: { type: String, trim: true, sparse: true, index: true },
+    paymentPaidAt: { type: Date },
+    paymentProvider: { type: String, enum: ['PAYSTACK'] },
+    reminder24hSentAt: { type: Date },
+    reminder1hSentAt: { type: Date },
 }, { timestamps: true });
+TelemedicineSessionSchema.index({ hospitalId: 1, appointmentId: 1 }, { sparse: true });
 TelemedicineSessionSchema.index({ hospitalId: 1, scheduledStartTime: 1, status: 1 });
 export const TelemedicineSessionModel = model('TelemedicineSession', TelemedicineSessionSchema);
 const TelemedicineMessageSchema = new Schema({
@@ -42,6 +58,70 @@ const TelemedicineMessageSchema = new Schema({
     senderModel: { type: String, enum: ['User', 'Patient'], required: true },
     messageText: { type: String, required: true, trim: true },
     attachmentUrl: { type: String },
+    attachmentName: { type: String, trim: true },
+    attachmentMimeType: { type: String, trim: true },
+    attachmentSize: { type: Number, min: 0 },
+    prescriptionId: { type: Schema.Types.ObjectId, ref: 'TelemedicinePrescription', index: true },
+    messageType: { type: String, enum: ['TEXT', 'CALL_STARTED', 'CALL_SUMMARY'], default: 'TEXT', index: true },
+    callSummary: {
+        callId: { type: String, trim: true },
+        callType: { type: String, enum: ['VIDEO', 'VOICE'] },
+        durationSeconds: { type: Number, min: 0 },
+        participantCount: { type: Number, min: 0 },
+        missedCall: { type: Boolean, default: false },
+    },
     sentAt: { type: Date, default: Date.now },
 }, { timestamps: false });
 export const TelemedicineMessageModel = model('TelemedicineMessage', TelemedicineMessageSchema);
+const PrescriptionMedicationSchema = new Schema({
+    genericName: { type: String, required: true, trim: true, maxlength: 200 },
+    strengthForm: { type: String, required: true, trim: true, maxlength: 200 },
+    dosageFrequency: { type: String, required: true, trim: true, maxlength: 500 },
+    duration: { type: String, required: true, trim: true, maxlength: 100 },
+    quantity: { type: String, required: true, trim: true, maxlength: 100 },
+    route: { type: String, required: true, trim: true, maxlength: 100 },
+}, { _id: false });
+const TelemedicinePrescriptionSchema = new Schema({
+    hospitalId: { type: Schema.Types.ObjectId, ref: 'Account', required: true, index: true },
+    sessionId: { type: Schema.Types.ObjectId, ref: 'TelemedicineSession', required: true, index: true },
+    patientId: { type: Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
+    doctorId: { type: Schema.Types.ObjectId, ref: 'Staff', required: true, index: true },
+    facilityName: { type: String, required: true, trim: true },
+    prescriberName: { type: String, required: true, trim: true },
+    professionalRegistrationNumber: { type: String, required: true, trim: true },
+    telemedicinePlatform: { type: String, default: 'MedXVerse', trim: true },
+    dateIssued: { type: Date, default: Date.now, required: true },
+    patientSnapshot: {
+        fullName: String,
+        dateOfBirth: Date,
+        patientIdNumber: String,
+        contactNumber: String,
+        residentialAddress: String,
+        knownDrugAllergies: [String],
+    },
+    diagnosis: { type: String, required: true, trim: true, maxlength: 3000 },
+    clinicalNotes: { type: String, trim: true, maxlength: 5000 },
+    medications: { type: [PrescriptionMedicationSchema], required: true, validate: [(value) => value.length > 0 && value.length <= 6, 'A prescription must contain 1 to 6 medications.'] },
+    patientInstructions: { type: String, trim: true, maxlength: 3000 },
+    pharmacistInstructions: { type: String, trim: true, maxlength: 3000 },
+    genericSubstitutionPermitted: { type: Boolean, default: false },
+    refillAuthorized: { type: Boolean, default: false },
+    numberOfRefills: { type: Number, min: 0, max: 12, default: 0 },
+    controlledSubstance: { type: Boolean, default: false },
+    prescriberAuthorizationId: { type: String, required: true, trim: true },
+    digitalSignature: { type: String, required: true, trim: true, maxlength: 300 },
+    signatureMethod: { type: String, enum: ['TYPED_NAME_ACKNOWLEDGMENT'], default: 'TYPED_NAME_ACKNOWLEDGMENT' },
+    signedAt: { type: Date, required: true },
+    verificationId: { type: String, required: true, unique: true, index: true },
+    status: { type: String, enum: ['ISSUED', 'PARTIALLY_DISPENSED', 'DISPENSED', 'CANCELLED'], default: 'ISSUED', index: true },
+    pharmacyDispensing: {
+        dispensedBy: String,
+        pharmacyName: String,
+        dateDispensed: Date,
+        notes: String,
+    },
+}, { timestamps: true, minimize: false });
+TelemedicinePrescriptionSchema.index({ hospitalId: 1, patientId: 1, dateIssued: -1 });
+TelemedicinePrescriptionSchema.index({ hospitalId: 1, sessionId: 1, dateIssued: -1 });
+export const TelemedicinePrescriptionModel = mongoose.models.TelemedicinePrescription ||
+    mongoose.model('TelemedicinePrescription', TelemedicinePrescriptionSchema);

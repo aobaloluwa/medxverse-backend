@@ -6,6 +6,13 @@ const PatientPortalAccountSchema = new Schema({
     password: { type: String, required: true, select: false },
     active: { type: Boolean, default: true, index: true },
     lastLoginAt: Date,
+    preferences: {
+        appointmentUpdates: { type: Boolean, default: true },
+        careTeamMessages: { type: Boolean, default: true },
+        billingUpdates: { type: Boolean, default: true },
+        emailNotifications: { type: Boolean, default: true },
+        smsNotifications: { type: Boolean, default: false },
+    },
 }, { timestamps: true });
 PatientPortalAccountSchema.index({ hospitalId: 1, email: 1 }, { unique: true });
 PatientPortalAccountSchema.index({ hospitalId: 1, patientId: 1 }, { unique: true });

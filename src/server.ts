@@ -7,6 +7,8 @@ import { attachBedWardWebSocket } from './modules/bed-ward/bed-ward.socket.js';
 import { initializeBedWardIntegrations } from './modules/bed-ward/bed-ward.integration.js';
 import { attachAppointmentWebSocket } from './modules/appointment/appointment.socket.js';
 import { attachCommunicationWebSocket } from './modules/communication/communication.socket.js';
+import { attachMedxRescueWebSocket } from './modules/medxrescue/medxrescue.socket.js';
+import { medxRescueService } from './modules/medxrescue/medxrescue.service.js';
 import { processTelemedicineReminders } from './modules/telemedicine/telemedicine.reminders.job.js';
 
 // IMPORTANT: production must start this file (not app.ts directly).
@@ -16,6 +18,7 @@ attachEmergencyWebSocket(server);
 attachBedWardWebSocket(server);
 attachAppointmentWebSocket(server);
 attachCommunicationWebSocket(server);
+attachMedxRescueWebSocket(server);
 initializeBedWardIntegrations();
 
 const startServer = async (): Promise<void> => {
@@ -24,6 +27,10 @@ const startServer = async (): Promise<void> => {
 
   // In-app/email telemedicine reminders; conditional database claims prevent duplicate sends.
   void processTelemedicineReminders().catch((error) => console.error('[Telemedicine] Initial reminder pass failed:', error));
+  void medxRescueService.expirePendingOffers().catch((error) => console.error('[MedxRescue] Initial offer-expiry pass failed:', error));
+  setInterval(() => {
+    void medxRescueService.expirePendingOffers().catch((error) => console.error('[MedxRescue] Offer-expiry pass failed:', error));
+  }, 15_000);
   setInterval(() => {
     void processTelemedicineReminders().catch((error) => console.error('[Telemedicine] Reminder pass failed:', error));
   }, 5 * 60_000);

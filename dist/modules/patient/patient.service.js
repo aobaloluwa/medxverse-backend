@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { PatientModel, EncounterModel, ObservationModel, ConditionModel, MedicationStatementModel, DocumentReferenceModel, ProcedureModel, ClaimModel, EhrEventModel, ConsentRecordModel, EhrAuditLogModel, PatientEhrViewModel, } from './patient.model.js';
+import { PatientModel, EncounterModel, ObservationModel, ConditionModel, MedicationStatementModel, ServiceRequestModel, DocumentReferenceModel, ProcedureModel, ClaimModel, EhrEventModel, ConsentRecordModel, EhrAuditLogModel, PatientEhrViewModel, } from './patient.model.js';
 // Register HMS model definitions before the patient registry queries them.
 // These are side-effect imports only; the patient module remains the owner of the
 // cross-module registry API. The registry itself is schema-driven and discovers
@@ -84,6 +84,7 @@ const RESOURCE_MODELS = {
     Observation: ObservationModel,
     Condition: ConditionModel,
     MedicationStatement: MedicationStatementModel,
+    ServiceRequest: ServiceRequestModel,
     DocumentReference: DocumentReferenceModel,
     Procedure: ProcedureModel,
     Claim: ClaimModel,
@@ -953,6 +954,7 @@ export class PatientService {
             Observation: [],
             Condition: [],
             MedicationStatement: [],
+            ServiceRequest: [],
             DocumentReference: [],
             Procedure: [],
             Claim: [],
@@ -1339,6 +1341,7 @@ export class PatientService {
             ...findSection('surgery'), ...findSection('ot'), ...findSection('dental'),
         ].slice(0, 50);
         const recentLaboratory = [
+            ...sanitizedEhr.resources.ServiceRequest.map((resource) => this.resourceSummary('ServiceRequest', resource)),
             ...sanitizedEhr.resources.Observation.map((resource) => this.resourceSummary('Observation', resource)),
             ...findSection('laboratory'),
         ].slice(0, 50);
@@ -1476,6 +1479,7 @@ export class PatientService {
             Observation: [],
             Condition: [],
             MedicationStatement: [],
+            ServiceRequest: [],
             DocumentReference: [],
             Procedure: [],
             Claim: [],
