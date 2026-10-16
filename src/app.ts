@@ -1,8 +1,12 @@
+
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import { env } from './config/env.js';
-import { globalErrorHandler, notFoundHandler } from './middlewares/error.middleware.js';
+import {
+  globalErrorHandler,
+  notFoundHandler,
+} from './middlewares/error.middleware.js';
 import v1Router from './routes/index.js';
 
 const app: Application = express();
@@ -17,20 +21,34 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, or Postman)
+      // Allow requests without an origin, such as mobile apps,
+      // curl, or Postman.
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
       }
     },
-    credentials: true, // Allow cookies / authorization headers
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Idempotency-Key',
+    ],
+  }),
 );
 
-app.use(express.json({ limit: '10mb', verify: (req, _res, buffer) => { (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer); } }));
+app.use(
+  express.json({
+    limit: '10mb',
+    verify: (req, _res, buffer) => {
+      (req as Request & { rawBody?: Buffer }).rawBody =
+        Buffer.from(buffer);
+    },
+  }),
+);
+
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 if (env.NODE_ENV === 'development') {
