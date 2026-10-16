@@ -51,7 +51,7 @@ Incident intake body example:
 - `POST /incidents/:id/dispatch-offers` — send a time-limited offer to a vehicle.
 - `GET /dispatch-offers?providerId=...` — pending offers for a provider.
 - `POST /dispatch-offers/:offerId/respond` — accept/decline an offer.
-- `GET /routing/estimate?originLatitude=...&originLongitude=...&destinationLatitude=...&destinationLongitude=...` — real road-route estimate when Google Maps is configured.
+- `GET /routing/estimate?originLatitude=...&originLongitude=...&destinationLatitude=...&destinationLongitude=...` — road-route estimate when a routing provider is configured.
 - `GET /facilities`, `POST /facilities`, `PATCH /facilities/:facilityId/active` — facility registry and admin activation.
 - `GET /facilities/:facilityId/acceptances` — list pending acceptance requests for the owning facility account.
 - `POST /incidents/:id/facility-acceptance-requests`, `PATCH /facilities/:facilityId/acceptances/:acceptanceId/respond` — request and record explicit hospital acceptance.
@@ -61,7 +61,10 @@ Incident intake body example:
 
 - Connect authenticated operational clients to `ws(s)://<backend-host>/ws/medxrescue?token=<access-token>`.
 - Dispatcher/admin roles receive operational state events; verified provider members receive events scoped to their provider; hospital admins receive facility-scoped events. Event payloads contain identifiers/statuses rather than patient details.
-- Configure `GOOGLE_MAPS_API_KEY` on the backend to enable Google Maps road-routing estimates. The endpoint returns `503` when routing is not configured or a route cannot be returned. This is a routing API integration, not a hosted map-tile UI; the frontend must use an approved map renderer and comply with provider terms.
+- Routing is selected with `MEDXRESCUE_ROUTING_PROVIDER`: `osrm`, `google`, or `none`. In development, the default is `osrm`; in production, the default is `none` so a public demo server is not silently used for emergency operations.
+- For development only, OSRM can use `https://router.project-osrm.org` without a key. Optionally set `MEDXRESCUE_OSRM_BASE_URL` to your own OSRM host. The public demo server is best-effort, rate-limited and not an emergency-service production dependency. For live operations, use a contracted routing provider with suitable service guarantees or self-host routing.
+- To use Google later, set `MEDXRESCUE_ROUTING_PROVIDER=google` and `GOOGLE_MAPS_API_KEY` on the backend only. `MEDXRESCUE_ROUTING_PROVIDER=none` disables route estimates. The endpoint returns `503` when routing is disabled or no route is available; it never fabricates an ETA.
+- This is a routing API integration, not a hosted map-tile UI. The frontend must use an approved map renderer and show the required attribution for its map and routing data.
 - Guest requests start as `UNTRIAGED`. Public callers cannot assign their own clinical priority; a dispatcher must set `ROUTINE`, `URGENT`, or `CRITICAL`.
 
 ## Incident lifecycle
@@ -78,7 +81,7 @@ A crew decline returns the incident to dispatcher review. A dispatcher can mark 
 4. Add a routing-provider abstraction and real road-routing integration before showing an ETA. GPS updates are stored with timestamps; freshness must be enforced in UI/dispatch logic.
 5. Connect the new WebSocket events to frontend workspaces and add SMS/voice/WhatsApp delivery only after the required provider/telecom agreements, plus abuse controls (CAPTCHA/phone verification where appropriate), monitoring, and disaster-recovery drills.
 6. Confirm local emergency-number routing, legal/privacy requirements, partner coverage, and escalation procedures before public launch. This module does not call emergency services or claim nationwide/24-hour coverage.
-7. Configure `GOOGLE_MAPS_API_KEY` for real road routing and test billing/quotas before enabling route estimates. Without it, the routing endpoint returns 503 rather than a guessed ETA.
+7. For development, use `MEDXRESCUE_ROUTING_PROVIDER=osrm` (no Google billing account required). The default OSRM demo service is for low-volume testing only and must not be relied on for production emergency dispatch. In production the default provider is `none` until an approved provider or self-hosted routing engine is configured. Google remains optional via `MEDXRESCUE_ROUTING_PROVIDER=google` and `GOOGLE_MAPS_API_KEY`.
 8. Run `npm ci` and `npm run build` in the complete backend project, then integration tests against MongoDB configured as a replica set/Atlas. The current environment could not complete dependency installation, so a full compile has not been verified here.
 
 This is an engineering foundation, not a substitute for clinical governance, a verified live fleet, an approved dispatch centre, or operational launch approval.

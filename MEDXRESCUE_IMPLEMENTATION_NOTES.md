@@ -11,11 +11,11 @@ The package entry point and TypeScript configuration use the repository-root `sr
 - Transactional dispatch offer creation/acceptance; vehicle assignment is only confirmed after a verified, available provider's crew explicitly accepts.
 - Authenticated `/ws/medxrescue` event channel with role/provider/facility-scoped minimal events.
 - Facility registry with admin activation, explicit receiving-facility acceptance, and transactional clinical handover.
-- Optional Google Maps road-routing estimate through a provider-independent interface.
+- Provider-independent road-routing interface with Google Maps and OSRM implementations, plus an explicit disabled mode.
 
 ## Configuration
 
-Set `GOOGLE_MAPS_API_KEY` on the backend only if Google Maps Directions API is enabled for your account. Without the key, route estimates return `503` and do not invent an ETA. Do not expose this key to the frontend.
+No Google billing account is required for development routing. Set `MEDXRESCUE_ROUTING_PROVIDER=osrm` to use OSRM and optionally set `MEDXRESCUE_OSRM_BASE_URL` to your own OSRM host. The default OSRM demo server is for low-volume testing only; it is best-effort and must not be treated as a production emergency-routing service. The provider defaults to `osrm` in development and `none` in production. For Google, set `MEDXRESCUE_ROUTING_PROVIDER=google` and `GOOGLE_MAPS_API_KEY` on the backend only. Never expose provider keys in the frontend. When routing is disabled or no route is returned, the API returns `503` rather than inventing an ETA.
 
 The module uses the existing `JWT_SECRET`, MongoDB connection and staff authentication setup. Dispatch offer acceptance and clinical handover use MongoDB transactions, so MongoDB must run as a replica set (MongoDB Atlas qualifies).
 
