@@ -11,8 +11,8 @@ const sendError = (res: Response, error: unknown) => {
 };
 const actorId = (req: Request): string => String((req as AuthRequest).user?._id || '');
 const accountIdOf = (req: Request): string => String((req as AuthRequest).user?.accountId || (req as AuthRequest).user?.hospitalId || '');
+const roleOf = (req: Request): string => String((req as AuthRequest).user?.role || (req as AuthRequest).account?.role || (req as AuthRequest).user?.accountType || (req as AuthRequest).account?.accountType || '').trim().toUpperCase();
 const platformAdmin = (req: Request): boolean => ['ADMIN', 'SYSTEM_ADMIN'].includes(roleOf(req));
-const roleOf = (req: Request): string => String((req as AuthRequest).user?.role || (req as AuthRequest).user?.accountType || '');
 const requireStaffRole = (req: Request, res: Response, roles: string[]): boolean => {
   if (!actorId(req) || !roles.includes(roleOf(req))) { res.status(403).json({ success: false, message: 'You do not have permission to perform this MedxRescue action.' }); return false; }
   return true;
@@ -37,7 +37,7 @@ export class MedxRescueController {
   }
 
   async getIncidentById(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'HOSPITAL_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const role = roleOf(req);
       const accountId = role === 'HOSPITAL_ADMIN' ? accountIdOf(req) : undefined;
@@ -56,7 +56,7 @@ export class MedxRescueController {
     catch (error) { sendError(res, error); }
   }
   async getRouteEstimate(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     const origin = { latitude: Number(req.query.originLatitude), longitude: Number(req.query.originLongitude) };
     const destination = { latitude: Number(req.query.destinationLatitude), longitude: Number(req.query.destinationLongitude) };
     const valid = (p: { latitude: number; longitude: number }) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude) && Math.abs(p.latitude) <= 90 && Math.abs(p.longitude) <= 180;
@@ -79,7 +79,7 @@ export class MedxRescueController {
     catch (error) { sendError(res, error); }
   }
   async recordEmergencyEscalation(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const channel = String(req.body?.channel || '');
       const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
@@ -88,7 +88,7 @@ export class MedxRescueController {
     } catch (error) { sendError(res, error); }
   }
   async updateIncidentPriority(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const priority = req.body?.priority as IncidentPriority;
       if (![IncidentPriority.ROUTINE, IncidentPriority.URGENT, IncidentPriority.CRITICAL].includes(priority)) {
@@ -100,7 +100,7 @@ export class MedxRescueController {
   }
 
   async updateIncidentStatus(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const status = req.body?.status as IncidentStatus;
       if (!Object.values(IncidentStatus).includes(status)) { res.status(400).json({ success: false, message: 'A valid incident status is required.' }); return; }
@@ -112,12 +112,17 @@ export class MedxRescueController {
     try { const data = await medxRescueService.submitProvider(req.body || {}); res.status(201).json({ success: true, data, message: 'Application received. Provider is not verified or dispatchable until approved by an authorized reviewer.' }); }
     catch (error) { sendError(res, error); }
   }
+  async listProviders(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'])) return;
+    try { res.json({ success: true, data: await medxRescueService.listProviders() }); }
+    catch (error) { sendError(res, error); }
+  }
   async listProvidersForReview(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'])) return;
     try { res.json({ success: true, data: await medxRescueService.listProvidersForReview() }); } catch (error) { sendError(res, error); }
   }
   async reviewProvider(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'])) return;
     try {
       const status = req.body?.status as ProviderVerificationStatus;
       if (!Object.values(ProviderVerificationStatus).includes(status)) { res.status(400).json({ success: false, message: 'A valid verification status is required.' }); return; }
@@ -143,7 +148,7 @@ export class MedxRescueController {
   }
 
   async listFacilities(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
     try { res.json({ success: true, data: await medxRescueService.listFacilities(req.query as Record<string, unknown>) }); }
     catch (error) { sendError(res, error); }
   }
@@ -158,7 +163,7 @@ export class MedxRescueController {
   }
 
   async requestFacilityAcceptance(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const data = await medxRescueService.requestFacilityAcceptance(String(req.params.id), String(req.body?.facilityId || ''), actorId(req));
       res.status(201).json({ success: true, data, message: 'Facility acceptance requested. The destination is not confirmed until the receiving facility explicitly accepts.' });
@@ -198,10 +203,10 @@ export class MedxRescueController {
   }
 
   async setProviderOperationalStatus(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
     try {
       const role = roleOf(req);
-      const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
       if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
       const status = req.body?.status as ProviderOperationalStatus;
       if (!Object.values(ProviderOperationalStatus).includes(status)) { res.status(400).json({ success: false, message: 'A valid provider status is required.' }); return; }
@@ -211,10 +216,10 @@ export class MedxRescueController {
   }
 
   async setVehicleOperationalStatus(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
     try {
       const role = roleOf(req);
-      const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
       if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
       const status = req.body?.status as ProviderOperationalStatus;
       if (!Object.values(ProviderOperationalStatus).includes(status)) { res.status(400).json({ success: false, message: 'A valid vehicle status is required.' }); return; }
@@ -224,16 +229,16 @@ export class MedxRescueController {
   }
 
   async addVehicle(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN'])) return;
     try {
       const role = roleOf(req);
-      const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
       if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
       const data = await medxRescueService.addVehicle(providerId, req.body || {}); res.status(201).json({ success: true, data });
     } catch (error) { sendError(res, error); }
   }
   async listVehicles(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER'])) return;
     try {
       const role = roleOf(req);
       const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
@@ -242,16 +247,16 @@ export class MedxRescueController {
     } catch (error) { sendError(res, error); }
   }
   async updateVehicleLocation(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
     try {
       const role = roleOf(req);
-      const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
       if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
       const data = await medxRescueService.updateVehicleLocation(String(req.params.vehicleId), providerId, req.body || {}); res.json({ success: true, data });
     } catch (error) { sendError(res, error); }
   }
   async confirmAcceptedAssignment(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       if (typeof req.body?.approve !== 'boolean') { res.status(400).json({ success: false, message: 'approve must be true or false.' }); return; }
       const data = await medxRescueService.confirmAcceptedAssignment(String(req.params.id), actorId(req), req.body.approve, typeof req.body?.reason === 'string' ? req.body.reason : undefined);
@@ -259,18 +264,18 @@ export class MedxRescueController {
     } catch (error) { sendError(res, error); }
   }
   async listDispatchEligibleVehicles(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
       const incidentId = typeof req.query.incidentId === 'string' ? req.query.incidentId : undefined;
       res.json({ success: true, data: await medxRescueService.listDispatchEligibleVehicles(incidentId), message: 'Candidates have verified providers, available vehicles, and fresh GPS. Dispatcher must still review coverage and clinical/operational suitability before sending offers.' });
     } catch (error) { sendError(res, error); }
   }
   async createDispatchOffer(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try { const vehicleIds = Array.isArray(req.body?.vehicleIds) ? req.body.vehicleIds.map(String) : String(req.body?.vehicleId || ''); const data = await medxRescueService.createDispatchOffer(String(req.params.id), vehicleIds, actorId(req), Number(req.body?.expiresInSeconds) || 90); res.status(201).json({ success: true, data, message: 'Dispatcher-approved offer wave sent. Dispatch remains unconfirmed until a crew accepts and the dispatcher confirms the assignment.' }); } catch (error) { sendError(res, error); }
   }
   async listOffers(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
     try {
       const role = roleOf(req);
       const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.query.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
@@ -279,11 +284,11 @@ export class MedxRescueController {
     } catch (error) { sendError(res, error); }
   }
   async respondToOffer(req: Request, res: Response): Promise<void> {
-    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
     try {
       const { vehicleId, accept, note } = req.body || {};
       const role = roleOf(req);
-      const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
       if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
       if (typeof accept !== 'boolean') { res.status(400).json({ success: false, message: 'accept must be true or false.' }); return; }
       const data = await medxRescueService.respondToOffer(String(req.params.offerId), String(providerId || ''), String(vehicleId || ''), accept, actorId(req), typeof note === 'string' ? note : undefined);

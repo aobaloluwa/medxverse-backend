@@ -762,6 +762,7 @@ export class MedxRescueService {
         });
     }
     async listProviderVehicles(providerId) { return RescueVehicleModel.find({ providerId }).sort({ createdAt: -1 }).lean().exec(); }
+    async listProviders() { return RescueProviderModel.find({}).sort({ createdAt: -1 }).limit(500).lean().exec(); }
     async listProvidersForReview() { return RescueProviderModel.find({ verificationStatus: { $in: [ProviderVerificationStatus.PENDING, ProviderVerificationStatus.UNDER_REVIEW] } }).sort({ createdAt: 1 }).lean().exec(); }
     async listOffers(providerId) { return RescueDispatchOfferModel.find({ providerId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() } }).populate('incidentId').populate('vehicleId').sort({ offeredAt: 1 }).lean().exec(); }
     async updateIncidentLocation(reference, token, input) {

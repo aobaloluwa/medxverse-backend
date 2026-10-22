@@ -8,8 +8,8 @@ const sendError = (res, error) => {
 };
 const actorId = (req) => String(req.user?._id || '');
 const accountIdOf = (req) => String(req.user?.accountId || req.user?.hospitalId || '');
+const roleOf = (req) => String(req.user?.role || req.account?.role || req.user?.accountType || req.account?.accountType || '').trim().toUpperCase();
 const platformAdmin = (req) => ['ADMIN', 'SYSTEM_ADMIN'].includes(roleOf(req));
-const roleOf = (req) => String(req.user?.role || req.user?.accountType || '');
 const requireStaffRole = (req, res, roles) => {
     if (!actorId(req) || !roles.includes(roleOf(req))) {
         res.status(403).json({ success: false, message: 'You do not have permission to perform this MedxRescue action.' });
@@ -38,7 +38,7 @@ export class MedxRescueController {
         }
     }
     async getIncidentById(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'HOSPITAL_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const role = roleOf(req);
@@ -72,7 +72,7 @@ export class MedxRescueController {
         }
     }
     async getRouteEstimate(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         const origin = { latitude: Number(req.query.originLatitude), longitude: Number(req.query.originLongitude) };
         const destination = { latitude: Number(req.query.destinationLatitude), longitude: Number(req.query.destinationLongitude) };
@@ -110,7 +110,7 @@ export class MedxRescueController {
         }
     }
     async recordEmergencyEscalation(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const channel = String(req.body?.channel || '');
@@ -123,7 +123,7 @@ export class MedxRescueController {
         }
     }
     async updateIncidentPriority(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const priority = req.body?.priority;
@@ -139,7 +139,7 @@ export class MedxRescueController {
         }
     }
     async updateIncidentStatus(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const status = req.body?.status;
@@ -163,8 +163,18 @@ export class MedxRescueController {
             sendError(res, error);
         }
     }
+    async listProviders(req, res) {
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN']))
+            return;
+        try {
+            res.json({ success: true, data: await medxRescueService.listProviders() });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
     async listProvidersForReview(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN']))
             return;
         try {
             res.json({ success: true, data: await medxRescueService.listProvidersForReview() });
@@ -174,7 +184,7 @@ export class MedxRescueController {
         }
     }
     async reviewProvider(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN']))
             return;
         try {
             const status = req.body?.status;
@@ -213,7 +223,7 @@ export class MedxRescueController {
         }
     }
     async listFacilities(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
             return;
         try {
             res.json({ success: true, data: await medxRescueService.listFacilities(req.query) });
@@ -238,7 +248,7 @@ export class MedxRescueController {
         }
     }
     async requestFacilityAcceptance(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const data = await medxRescueService.requestFacilityAcceptance(String(req.params.id), String(req.body?.facilityId || ''), actorId(req));
@@ -291,11 +301,11 @@ export class MedxRescueController {
         }
     }
     async setProviderOperationalStatus(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
             return;
         try {
             const role = roleOf(req);
-            const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+            const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
             if (!providerId) {
                 res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
                 return;
@@ -313,11 +323,11 @@ export class MedxRescueController {
         }
     }
     async setVehicleOperationalStatus(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
             return;
         try {
             const role = roleOf(req);
-            const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+            const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
             if (!providerId) {
                 res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
                 return;
@@ -335,11 +345,11 @@ export class MedxRescueController {
         }
     }
     async addVehicle(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN']))
             return;
         try {
             const role = roleOf(req);
-            const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
+            const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.params.providerId) : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN']) || '');
             if (!providerId) {
                 res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
                 return;
@@ -352,7 +362,7 @@ export class MedxRescueController {
         }
     }
     async listVehicles(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER']))
             return;
         try {
             const role = roleOf(req);
@@ -368,11 +378,11 @@ export class MedxRescueController {
         }
     }
     async updateVehicleLocation(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
             return;
         try {
             const role = roleOf(req);
-            const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
+            const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
             if (!providerId) {
                 res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
                 return;
@@ -385,7 +395,7 @@ export class MedxRescueController {
         }
     }
     async confirmAcceptedAssignment(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             if (typeof req.body?.approve !== 'boolean') {
@@ -400,7 +410,7 @@ export class MedxRescueController {
         }
     }
     async listDispatchEligibleVehicles(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const incidentId = typeof req.query.incidentId === 'string' ? req.query.incidentId : undefined;
@@ -411,7 +421,7 @@ export class MedxRescueController {
         }
     }
     async createDispatchOffer(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
         try {
             const vehicleIds = Array.isArray(req.body?.vehicleIds) ? req.body.vehicleIds.map(String) : String(req.body?.vehicleId || '');
@@ -423,7 +433,7 @@ export class MedxRescueController {
         }
     }
     async listOffers(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
             return;
         try {
             const role = roleOf(req);
@@ -439,12 +449,12 @@ export class MedxRescueController {
         }
     }
     async respondToOffer(req, res) {
-        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER']))
             return;
         try {
             const { vehicleId, accept, note } = req.body || {};
             const role = roleOf(req);
-            const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
+            const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
             if (!providerId) {
                 res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
                 return;

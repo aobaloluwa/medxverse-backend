@@ -22,6 +22,7 @@ router.patch('/incidents/:id/status', (req, res) => void medxRescueController.up
 router.patch('/incidents/:id/priority', (req, res) => void medxRescueController.updateIncidentPriority(req, res));
 router.post('/incidents/:id/escalations', (req, res) => void medxRescueController.recordEmergencyEscalation(req, res));
 router.patch('/incidents/:id/assignment-confirmation', (req, res) => void medxRescueController.confirmAcceptedAssignment(req, res));
+router.get('/providers', (req, res) => void medxRescueController.listProviders(req, res));
 router.get('/providers/review-queue', (req, res) => void medxRescueController.listProvidersForReview(req, res));
 router.patch('/providers/:providerId/review', (req, res) => void medxRescueController.reviewProvider(req, res));
 router.post('/providers/:providerId/members', (req, res) => void medxRescueController.linkProviderMember(req, res));
