@@ -4,6 +4,7 @@ export enum IncidentStatus {
   REQUEST_RECEIVED = 'REQUEST_RECEIVED',
   DISPATCH_REVIEW = 'DISPATCH_REVIEW',
   OFFERED_TO_CREW = 'OFFERED_TO_CREW',
+  CREW_ACCEPTED_PENDING_CONFIRMATION = 'CREW_ACCEPTED_PENDING_CONFIRMATION',
   CREW_CONFIRMED = 'CREW_CONFIRMED',
   EN_ROUTE = 'EN_ROUTE',
   ON_SCENE = 'ON_SCENE',
@@ -24,7 +25,7 @@ export interface IIncidentEvent { status: IncidentStatus; at: Date; actorType: '
 export interface IEmergencyIncident extends Document {
   publicReference: string; status: IncidentStatus; priority: IncidentPriority; intakeChannel: string;
   callerName?: string; callerPhone: string; callerIsPatient: boolean; patientName?: string; patientAge?: number;
-  chiefComplaint: string; additionalDetails?: string; location: IGeoPoint; landmark?: string; locationAccuracyMeters?: number;
+  chiefComplaint: string; additionalDetails?: string; locationDescription?: string; triageAnswers?: { questionId: string; answer: string }[]; triageUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageSuggestedUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageReviewedBy?: Types.ObjectId; triageReviewedAt?: Date; location?: IGeoPoint; landmark?: string; locationAccuracyMeters?: number;
   destinationFacilityId?: Types.ObjectId; providerId?: Types.ObjectId; vehicleId?: Types.ObjectId; acceptedOfferId?: Types.ObjectId;
   guestTokenHash: string; guestTokenExpiresAt: Date; idempotencyKey: string; idempotencyFingerprint: string; events: IIncidentEvent[];
   createdAt: Date; updatedAt: Date; cancelledAt?: Date; handedOverAt?: Date;

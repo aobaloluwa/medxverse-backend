@@ -10,7 +10,11 @@ const IncidentSchema = new Schema({
     callerName: { type: String, trim: true, maxlength: 120 }, callerPhone: { type: String, required: true, trim: true, maxlength: 40 },
     callerIsPatient: { type: Boolean, default: true }, patientName: { type: String, trim: true, maxlength: 120 }, patientAge: { type: Number, min: 0, max: 120 },
     chiefComplaint: { type: String, required: true, trim: true, maxlength: 500 }, additionalDetails: { type: String, trim: true, maxlength: 2000 },
-    location: { type: GeoPointSchema, required: true }, landmark: { type: String, trim: true, maxlength: 500 }, locationAccuracyMeters: { type: Number, min: 0, max: 100000 },
+    triageAnswers: { type: [{ questionId: { type: String, required: true, trim: true, maxlength: 80 }, answer: { type: String, required: true, trim: true, maxlength: 300 } }], default: [] },
+    triageUrgency: { type: String, enum: ['IMMEDIATE', 'URGENT', 'ROUTINE', 'UNKNOWN'], default: 'UNKNOWN', index: true },
+    triageSuggestedUrgency: { type: String, enum: ['IMMEDIATE', 'URGENT', 'ROUTINE', 'UNKNOWN'], default: 'UNKNOWN', index: true },
+    triageReviewedBy: Schema.Types.ObjectId, triageReviewedAt: Date,
+    location: { type: GeoPointSchema }, landmark: { type: String, trim: true, maxlength: 500 }, locationDescription: { type: String, trim: true, maxlength: 500 }, locationAccuracyMeters: { type: Number, min: 0, max: 100000 },
     destinationFacilityId: { type: Schema.Types.ObjectId, ref: 'RescueFacility' }, providerId: { type: Schema.Types.ObjectId, ref: 'RescueProvider' },
     vehicleId: { type: Schema.Types.ObjectId, ref: 'RescueVehicle' }, acceptedOfferId: { type: Schema.Types.ObjectId, ref: 'RescueDispatchOffer' },
     guestTokenHash: { type: String, required: true, select: false }, guestTokenExpiresAt: { type: Date, required: true },
@@ -45,8 +49,8 @@ const OfferSchema = new Schema({
     offeredBy: { type: Schema.Types.ObjectId, required: true }, offeredAt: { type: Date, default: Date.now }, expiresAt: { type: Date, required: true, index: true }, respondedAt: Date, responseNote: { type: String, maxlength: 500 },
 }, { timestamps: true });
 OfferSchema.index({ incidentId: 1, status: 1 });
-// Prevent concurrent dispatchers from issuing multiple pending offers for one incident.
-OfferSchema.index({ incidentId: 1 }, { unique: true, partialFilterExpression: { status: 'PENDING' } });
+// Parallel offers are intentional: a dispatcher-approved first wave may notify several eligible providers.
+// Assignment uniqueness is enforced transactionally on the incident and vehicle, not by limiting pending offers.
 OfferSchema.index({ vehicleId: 1, status: 1 });
 const AuditSchema = new Schema({ incidentId: { type: Schema.Types.ObjectId, ref: 'RescueIncident', index: true }, actorType: { type: String, required: true }, actorId: Schema.Types.ObjectId, action: { type: String, required: true, index: true }, reason: { type: String, maxlength: 1000 }, metadata: { type: Schema.Types.Mixed } }, { timestamps: { createdAt: true, updatedAt: false } });
 export const RescueIncidentModel = mongoose.models.RescueIncident || model('RescueIncident', IncidentSchema);

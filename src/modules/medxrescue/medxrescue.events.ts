@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events';
 export type MedxRescueEventType =
   | 'incident.created'
   | 'incident.changed'
+  | 'incident.escalation.required'
+  | 'incident.escalation.recorded'
   | 'dispatch.offer.created'
   | 'dispatch.offer.responded'
   | 'provider.changed'
@@ -22,6 +24,9 @@ export interface MedxRescueEvent {
   vehicleId?: string;
   facilityId?: string;
   acceptanceId?: string;
+  channel?: string;
+  reason?: string;
+  triageSuggestedUrgency?: string;
 }
 
 export const medxRescueEvents = new EventEmitter();

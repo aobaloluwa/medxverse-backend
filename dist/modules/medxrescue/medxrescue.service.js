@@ -36,7 +36,12 @@ export class MedxRescueService {
         const callerPhone = requireText(input.callerPhone, 'Caller phone', 40);
         const chiefComplaint = requireText(input.chiefComplaint, 'Emergency description', 500);
         const callerIsPatient = input.callerIsPatient !== false;
-        const location = geoPoint(input.latitude, input.longitude);
+        const hasCoordinates = input.latitude !== undefined && input.latitude !== null && input.latitude !== '' && input.longitude !== undefined && input.longitude !== null && input.longitude !== '';
+        const landmark = typeof input.landmark === 'string' ? input.landmark.trim().slice(0, 500) : undefined;
+        const locationDescription = typeof input.locationDescription === 'string' ? input.locationDescription.trim().slice(0, 500) : undefined;
+        if (!hasCoordinates && !landmark && !locationDescription)
+            throw Object.assign(new Error('Provide GPS coordinates, a landmark, or a location description so dispatch can locate the emergency.'), { statusCode: 400 });
+        const location = hasCoordinates ? geoPoint(input.latitude, input.longitude) : undefined;
         const callerName = typeof input.callerName === 'string' ? input.callerName.trim().slice(0, 120) : undefined;
         const patientName = callerIsPatient ? undefined : (typeof input.patientName === 'string' ? input.patientName.trim().slice(0, 120) : undefined);
         const patientAge = input.patientAge === undefined || input.patientAge === '' ? undefined : Number(input.patientAge);
@@ -44,7 +49,14 @@ export class MedxRescueService {
             throw Object.assign(new Error('Patient age must be a number between 0 and 120.'), { statusCode: 400 });
         }
         const additionalDetails = typeof input.additionalDetails === 'string' ? input.additionalDetails.trim().slice(0, 2000) : undefined;
-        const landmark = typeof input.landmark === 'string' ? input.landmark.trim().slice(0, 500) : undefined;
+        const triageAnswers = Array.isArray(input.triageAnswers) ? input.triageAnswers.slice(0, 30).map((item) => ({ questionId: String(item?.questionId || '').trim().slice(0, 80), answer: String(item?.answer || '').trim().slice(0, 300) })).filter((item) => item.questionId && item.answer) : [];
+        // Caller-provided urgency is never trusted as a clinical decision. These conservative keyword flags are only a review aid and must be approved by the pilot's clinical-safety lead before live use.
+        const affirmative = (value) => ['YES', 'TRUE', '1', 'SEVERE', 'CANNOT', 'UNCONSCIOUS', 'NOT BREATHING'].includes(value.trim().toUpperCase());
+        const immediateQuestionIds = new Set(['unconscious', 'not_breathing', 'severe_breathing_difficulty', 'severe_bleeding', 'stroke_signs', 'seizure', 'unresponsive']);
+        const hasImmediateRedFlag = triageAnswers.some((item) => immediateQuestionIds.has(item.questionId.toLowerCase().replace(/[^a-z0-9_]/g, '_')) && affirmative(item.answer));
+        const triageSuggestedUrgency = hasImmediateRedFlag ? 'IMMEDIATE' : 'UNKNOWN';
+        // Final urgency remains UNKNOWN until a dispatcher/qualified reviewer records it.
+        const triageUrgency = 'UNKNOWN';
         const intakeChannel = ['GUEST_WEB', 'APP_SOS', 'ASSISTED', 'OTHER'].includes(String(input.intakeChannel)) ? String(input.intakeChannel) : 'GUEST_WEB';
         const locationAccuracyMeters = input.locationAccuracyMeters === undefined ? undefined : Number(input.locationAccuracyMeters);
         if (locationAccuracyMeters !== undefined && (!Number.isFinite(locationAccuracyMeters) || locationAccuracyMeters < 0 || locationAccuracyMeters > 100000)) {
@@ -52,7 +64,7 @@ export class MedxRescueService {
         }
         const fingerprint = sha256(JSON.stringify({
             callerPhone, chiefComplaint, callerIsPatient, callerName, patientName, patientAge,
-            additionalDetails, location, landmark, intakeChannel, locationAccuracyMeters,
+            additionalDetails, triageAnswers, triageUrgency, triageSuggestedUrgency, location, landmark, locationDescription, intakeChannel, locationAccuracyMeters,
         }));
         const token = crypto.createHmac('sha256', env.JWT_SECRET).update(`guest:${idempotencyKey}`).digest('base64url');
         const existing = await RescueIncidentModel.findOne({ idempotencyKey }).select('+guestTokenHash +idempotencyFingerprint').exec();
@@ -72,8 +84,8 @@ export class MedxRescueService {
                 intakeChannel,
                 callerName,
                 callerPhone, callerIsPatient, patientName, patientAge,
-                chiefComplaint, additionalDetails,
-                location, landmark, locationAccuracyMeters,
+                chiefComplaint, additionalDetails, triageAnswers, triageUrgency, triageSuggestedUrgency,
+                location, landmark, locationDescription, locationAccuracyMeters,
                 guestTokenHash: sha256(token), guestTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
                 idempotencyKey, idempotencyFingerprint: fingerprint,
                 events: [{ status: IncidentStatus.REQUEST_RECEIVED, at: new Date(), actorType: 'GUEST', note: 'Emergency request received; dispatcher review is required.' }],
@@ -91,15 +103,20 @@ export class MedxRescueService {
             throw error;
         }
         await audit({ incidentId: incident._id, actorType: 'GUEST', action: 'INCIDENT_CREATED', metadata: { intakeChannel: incident.intakeChannel } });
-        publishMedxRescueEvent({ type: 'incident.created', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status });
+        publishMedxRescueEvent({ type: 'incident.created', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, triageSuggestedUrgency: incident.triageSuggestedUrgency });
+        if (incident.triageSuggestedUrgency === 'IMMEDIATE') {
+            await audit({ incidentId: incident._id, actorType: 'SYSTEM', action: 'TRIAGE_RED_FLAG_REQUIRES_REVIEW', metadata: { suggestedUrgency: incident.triageSuggestedUrgency } });
+            publishMedxRescueEvent({ type: 'incident.escalation.required', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, reason: 'A configured triage red-flag answer requires immediate dispatcher review.' });
+        }
         return { incident: this.publicIncident(incident), accessToken: token, reused: false };
     }
     publicIncident(incident) {
         const publicStatusMessage = {
             [IncidentStatus.REQUEST_RECEIVED]: 'Your request has been received. A human dispatcher must review it.',
             [IncidentStatus.DISPATCH_REVIEW]: 'A dispatcher is reviewing your request.',
-            [IncidentStatus.OFFERED_TO_CREW]: 'A dispatch offer has been sent. Crew acceptance is still pending.',
-            [IncidentStatus.CREW_CONFIRMED]: 'A verified crew has accepted the request.',
+            [IncidentStatus.OFFERED_TO_CREW]: 'Eligible providers have been offered the request. Crew acceptance is pending.',
+            [IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION]: 'A crew has accepted; the dispatcher is validating and confirming the assignment.',
+            [IncidentStatus.CREW_CONFIRMED]: 'A dispatcher has confirmed the verified crew and vehicle.',
             [IncidentStatus.EN_ROUTE]: 'The confirmed crew is en route.',
             [IncidentStatus.ON_SCENE]: 'The crew has arrived at the reported location.',
             [IncidentStatus.TRANSPORTING]: 'The patient is being transported.',
@@ -109,7 +126,7 @@ export class MedxRescueService {
         };
         return {
             id: String(incident._id), reference: incident.publicReference, status: incident.status,
-            chiefComplaint: incident.chiefComplaint, location: incident.location, landmark: incident.landmark,
+            chiefComplaint: incident.chiefComplaint, location: incident.location, landmark: incident.landmark, locationDescription: incident.locationDescription,
             createdAt: incident.createdAt, updatedAt: incident.updatedAt,
             // No assignment is implied until a verified crew explicitly accepts an offer.
             crewConfirmed: [IncidentStatus.CREW_CONFIRMED, IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING, IncidentStatus.HANDED_OVER].includes(incident.status),
@@ -153,7 +170,7 @@ export class MedxRescueService {
             const facilities = await RescueFacilityModel.find({ ownerAccountId: new Types.ObjectId(hospitalAccountId) }).select('_id').lean().exec();
             filter.destinationFacilityId = { $in: facilities.map((facility) => facility._id) };
         }
-        const incident = await RescueIncidentModel.findOne(filter).select('-guestTokenHash -idempotencyKey -idempotencyFingerprint').populate('providerId', 'displayName verificationStatus').populate('vehicleId', 'registrationNumber makeModel vehicleClass location locationUpdatedAt status').populate('destinationFacilityId', 'name facilityType address capabilities emergencyContactPhone location active').exec();
+        const incident = await RescueIncidentModel.findOne(filter).select('-guestTokenHash -idempotencyKey -idempotencyFingerprint').populate('providerId', 'displayName verificationStatus').populate('vehicleId', 'registrationNumber makeModel vehicleClass location locationUpdatedAt locationAccuracyMeters status').populate('destinationFacilityId', 'name facilityType address capabilities emergencyContactPhone location active').exec();
         if (!incident)
             throw Object.assign(new Error('Emergency incident not found or you do not have access to it.'), { statusCode: 404 });
         return incident;
@@ -162,7 +179,27 @@ export class MedxRescueService {
         const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
         if (!incident || !safeEqual(incident.guestTokenHash, sha256(token)))
             throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
-        return this.publicIncident(incident);
+        const result = this.publicIncident(incident);
+        // Guest tracking is incident-scoped and is exposed only after dispatcher-confirmed assignment.
+        if ([IncidentStatus.CREW_CONFIRMED, IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING].includes(incident.status) && result.crewConfirmed && incident.vehicleId) {
+            const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId, activeIncidentId: incident._id }).select('location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+            if (vehicle?.location?.coordinates?.length === 2 && vehicle.locationUpdatedAt) {
+                const updatedAt = new Date(vehicle.locationUpdatedAt);
+                const ageMs = Math.max(0, Date.now() - updatedAt.getTime());
+                result.tracking = {
+                    latitude: vehicle.location.coordinates[1],
+                    longitude: vehicle.location.coordinates[0],
+                    locationUpdatedAt: updatedAt,
+                    locationAccuracyMeters: vehicle.locationAccuracyMeters,
+                    freshness: ageMs <= 15_000 ? 'LIVE' : ageMs <= 60_000 ? 'DELAYED' : 'STALE',
+                    isStale: ageMs > 60_000,
+                };
+            }
+            else {
+                result.tracking = { freshness: 'UNAVAILABLE', isStale: true };
+            }
+        }
+        return result;
     }
     async listIncidents(query, hospitalAccountId) {
         const page = Math.max(1, Number(query.page) || 1);
@@ -202,12 +239,28 @@ export class MedxRescueService {
             const offer = await RescueDispatchOfferModel.findOneAndUpdate({ _id: item._id, status: DispatchOfferStatus.PENDING, expiresAt: { $lte: now } }, { $set: { status: DispatchOfferStatus.EXPIRED, respondedAt: now, responseNote: 'Offer expired without crew response.' } }, { new: true }).exec();
             if (!offer)
                 continue;
-            const incident = await RescueIncidentModel.findOneAndUpdate({ _id: item.incidentId, status: IncidentStatus.OFFERED_TO_CREW }, { $set: { status: IncidentStatus.DISPATCH_REVIEW }, $push: { events: { status: IncidentStatus.DISPATCH_REVIEW, at: now, actorType: 'SYSTEM', note: 'Dispatch offer expired without crew response; dispatcher review required.' } } }, { new: true }).exec();
+            const liveOffers = await RescueDispatchOfferModel.countDocuments({ incidentId: item.incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: now } }).exec();
+            const incident = liveOffers === 0 ? await RescueIncidentModel.findOneAndUpdate({ _id: item.incidentId, status: IncidentStatus.OFFERED_TO_CREW, acceptedOfferId: { $exists: false } }, { $set: { status: IncidentStatus.DISPATCH_REVIEW }, $push: { events: { status: IncidentStatus.DISPATCH_REVIEW, at: now, actorType: 'SYSTEM', note: 'All dispatch offers expired without crew response; dispatcher review required.' } } }, { new: true }).exec() : await RescueIncidentModel.findById(item.incidentId).exec();
             await audit({ incidentId: item.incidentId, actorType: 'SYSTEM', action: 'DISPATCH_OFFER_EXPIRED', metadata: { offerId: String(item._id), incidentReturnedToReview: Boolean(incident) } });
             publishMedxRescueEvent({ type: 'dispatch.offer.responded', incidentId: String(item.incidentId), incidentReference: incident?.publicReference, status: incident?.status || IncidentStatus.OFFERED_TO_CREW, offerId: String(item._id), providerId: String(item.providerId), vehicleId: String(item.vehicleId) });
             processed += 1;
         }
         return processed;
+    }
+    async recordEmergencyEscalation(id, actorId, channel, reason) {
+        if (!Types.ObjectId.isValid(id) || !Types.ObjectId.isValid(actorId))
+            throw Object.assign(new Error('Valid incident and dispatcher IDs are required.'), { statusCode: 400 });
+        const allowedChannels = ['112', 'PHONE_DISPATCH', 'MANUAL_PROVIDER_CONTACT', 'OTHER'];
+        if (!allowedChannels.includes(channel))
+            throw Object.assign(new Error('Choose a supported escalation channel.'), { statusCode: 400 });
+        const incident = await RescueIncidentModel.findById(id).select('publicReference status priority triageSuggestedUrgency').exec();
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        if ([IncidentStatus.CANCELLED, IncidentStatus.HANDED_OVER].includes(incident.status))
+            throw Object.assign(new Error('A closed incident cannot be escalated.'), { statusCode: 409 });
+        await audit({ incidentId: incident._id, actorType: 'STAFF', actorId, action: 'EMERGENCY_FALLBACK_ESCALATION_RECORDED', reason, metadata: { channel, incidentStatus: incident.status, priority: incident.priority, triageSuggestedUrgency: incident.triageSuggestedUrgency, recordedAt: new Date().toISOString() } });
+        publishMedxRescueEvent({ type: 'incident.escalation.recorded', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, channel, reason: reason?.slice(0, 500) });
+        return { incidentId: String(incident._id), reference: incident.publicReference, status: incident.status, channel, recordedAt: new Date() };
     }
     async updateIncidentPriority(id, priority, actorId, reason) {
         if (!Types.ObjectId.isValid(id))
@@ -219,7 +272,7 @@ export class MedxRescueService {
             throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
         if ([IncidentStatus.CANCELLED, IncidentStatus.HANDED_OVER].includes(current.status))
             throw Object.assign(new Error('Priority cannot be changed for a closed incident.'), { statusCode: 409 });
-        const incident = await RescueIncidentModel.findOneAndUpdate({ _id: id, priority: current.priority }, { $set: { priority }, $push: { events: { status: current.status, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(actorId), note: `Priority set to ${priority}${reason ? `: ${reason.slice(0, 350)}` : ''}` } } }, { new: true }).exec();
+        const incident = await RescueIncidentModel.findOneAndUpdate({ _id: id, priority: current.priority }, { $set: { priority, triageReviewedBy: new Types.ObjectId(actorId), triageReviewedAt: new Date(), triageUrgency: priority === IncidentPriority.CRITICAL ? 'IMMEDIATE' : priority === IncidentPriority.URGENT ? 'URGENT' : 'ROUTINE' }, $push: { events: { status: current.status, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(actorId), note: `Priority set to ${priority}${reason ? `: ${reason.slice(0, 350)}` : ''}` } } }, { new: true }).exec();
         if (!incident)
             throw Object.assign(new Error('Incident changed concurrently. Refresh and try again.'), { statusCode: 409 });
         await audit({ incidentId: incident._id, actorType: 'STAFF', actorId, action: 'INCIDENT_PRIORITY_CHANGED', reason, metadata: { priority } });
@@ -230,7 +283,7 @@ export class MedxRescueService {
         // These states are only entered by the explicit offer/accept workflow.
         if (status === IncidentStatus.HANDED_OVER)
             throw Object.assign(new Error('Use the clinical handover workflow to record hospital acceptance and handover.'), { statusCode: 409 });
-        if ([IncidentStatus.OFFERED_TO_CREW, IncidentStatus.CREW_CONFIRMED].includes(status)) {
+        if ([IncidentStatus.OFFERED_TO_CREW, IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, IncidentStatus.CREW_CONFIRMED].includes(status)) {
             throw Object.assign(new Error('Use the dispatch-offer workflow for offer and crew-confirmation states.'), { statusCode: 409 });
         }
         if (!Types.ObjectId.isValid(id))
@@ -239,6 +292,7 @@ export class MedxRescueService {
             [IncidentStatus.REQUEST_RECEIVED]: [IncidentStatus.DISPATCH_REVIEW, IncidentStatus.CANCELLED],
             [IncidentStatus.DISPATCH_REVIEW]: [IncidentStatus.OFFERED_TO_CREW, IncidentStatus.NO_RESOURCE_AVAILABLE, IncidentStatus.CANCELLED],
             [IncidentStatus.OFFERED_TO_CREW]: [IncidentStatus.DISPATCH_REVIEW, IncidentStatus.CANCELLED],
+            [IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION]: [IncidentStatus.CANCELLED],
             [IncidentStatus.CREW_CONFIRMED]: [IncidentStatus.EN_ROUTE, IncidentStatus.CANCELLED],
             [IncidentStatus.EN_ROUTE]: [IncidentStatus.ON_SCENE, IncidentStatus.CANCELLED],
             [IncidentStatus.ON_SCENE]: [IncidentStatus.TRANSPORTING, IncidentStatus.CANCELLED],
@@ -253,8 +307,11 @@ export class MedxRescueService {
         const updated = await RescueIncidentModel.findOneAndUpdate({ _id: id, status: current.status }, { $set: { status, ...(status === IncidentStatus.CANCELLED ? { cancelledAt: new Date() } : {}) }, $push: { events: { status, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(actorId), note: reason?.slice(0, 500) } } }, { new: true }).exec();
         if (!updated)
             throw Object.assign(new Error('Incident changed concurrently. Refresh and try again.'), { statusCode: 409 });
-        if (status === IncidentStatus.CANCELLED && updated.vehicleId) {
-            await RescueVehicleModel.updateOne({ _id: updated.vehicleId, activeIncidentId: updated._id }, { $set: { status: ProviderOperationalStatus.OFFLINE }, $unset: { activeIncidentId: 1 } }).exec();
+        if (status === IncidentStatus.CANCELLED) {
+            await RescueDispatchOfferModel.updateMany({ incidentId: updated._id, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.WITHDRAWN, respondedAt: new Date(), responseNote: 'Incident cancelled by dispatcher.' } }).exec();
+            if (updated.vehicleId) {
+                await RescueVehicleModel.updateOne({ _id: updated.vehicleId, activeIncidentId: updated._id }, { $set: { status: ProviderOperationalStatus.OFFLINE }, $unset: { activeIncidentId: 1 } }).exec();
+            }
         }
         await audit({ incidentId: updated._id, actorType: 'STAFF', actorId, action: 'INCIDENT_STATUS_CHANGED', reason, metadata: { from: current.status, to: status } });
         publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(updated._id), incidentReference: updated.publicReference, status: updated.status, providerId: updated.providerId ? String(updated.providerId) : undefined, vehicleId: updated.vehicleId ? String(updated.vehicleId) : undefined });
@@ -357,55 +414,68 @@ export class MedxRescueService {
     async updateVehicleLocation(vehicleId, providerId, input) {
         if (!Types.ObjectId.isValid(vehicleId) || !Types.ObjectId.isValid(providerId))
             throw Object.assign(new Error('Invalid vehicle or provider ID.'), { statusCode: 400 });
+        const provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: { $in: [ProviderOperationalStatus.AVAILABLE, ProviderOperationalStatus.BUSY] } }).select('_id').lean().exec();
+        if (!provider)
+            throw Object.assign(new Error('Only a verified, operational provider can submit vehicle GPS.'), { statusCode: 403 });
         const location = geoPoint(input.latitude, input.longitude);
-        const updated = await RescueVehicleModel.findOneAndUpdate({ _id: vehicleId, providerId }, { $set: { location, locationUpdatedAt: new Date(), locationAccuracyMeters: input.accuracyMeters === undefined ? undefined : Math.max(0, Math.min(100000, Number(input.accuracyMeters))) } }, { new: true }).exec();
+        let accuracy;
+        if (input.accuracyMeters !== undefined) {
+            accuracy = Number(input.accuracyMeters);
+            if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100000)
+                throw Object.assign(new Error('GPS accuracy must be between 0 and 100000 metres.'), { statusCode: 400 });
+        }
+        const updated = await RescueVehicleModel.findOneAndUpdate({ _id: vehicleId, providerId, status: { $in: [ProviderOperationalStatus.AVAILABLE, 'DISPATCHED'] } }, { $set: { location, locationUpdatedAt: new Date(), ...(accuracy === undefined ? {} : { locationAccuracyMeters: accuracy }) } }, { new: true }).exec();
         if (!updated)
-            throw Object.assign(new Error('Vehicle not found for this provider.'), { statusCode: 404 });
+            throw Object.assign(new Error('Vehicle is not found, not assigned to this provider, or not in an active operational state.'), { statusCode: 404 });
         publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(providerId), vehicleId: String(updated._id) });
         return updated;
     }
-    async createDispatchOffer(incidentId, vehicleId, dispatcherId, expiresInSeconds = 90) {
-        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(vehicleId) || !Types.ObjectId.isValid(dispatcherId))
-            throw Object.assign(new Error('Invalid incident, vehicle, or dispatcher ID.'), { statusCode: 400 });
+    async createDispatchOffer(incidentId, vehicleIdsInput, dispatcherId, expiresInSeconds = 90) {
+        const vehicleIds = [...new Set((Array.isArray(vehicleIdsInput) ? vehicleIdsInput : [vehicleIdsInput]).map(String))];
+        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(dispatcherId) || vehicleIds.length < 1 || vehicleIds.length > 20 || vehicleIds.some((id) => !Types.ObjectId.isValid(id))) {
+            throw Object.assign(new Error('Valid incident, dispatcher, and between one and twenty vehicle IDs are required.'), { statusCode: 400 });
+        }
         const session = await mongoose.startSession();
-        let createdOffer;
+        const createdOffers = [];
         let incidentReference = '';
         try {
             await session.withTransaction(async () => {
+                createdOffers.length = 0;
                 const incident = await RescueIncidentModel.findById(incidentId).session(session).exec();
                 if (!incident)
                     throw Object.assign(new Error('Incident not found.'), { statusCode: 404 });
-                if (![IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.NO_RESOURCE_AVAILABLE].includes(incident.status)) {
-                    throw Object.assign(new Error('This incident is not available for a new dispatch offer.'), { statusCode: 409 });
+                if (![IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.NO_RESOURCE_AVAILABLE, IncidentStatus.OFFERED_TO_CREW].includes(incident.status) || incident.acceptedOfferId) {
+                    throw Object.assign(new Error('This incident is not available for new dispatch offers.'), { statusCode: 409 });
                 }
-                const vehicle = await RescueVehicleModel.findById(vehicleId).session(session).exec();
-                if (!vehicle)
-                    throw Object.assign(new Error('Vehicle not found.'), { statusCode: 404 });
-                const provider = await RescueProviderModel.findOne({
-                    _id: vehicle.providerId,
-                    verificationStatus: ProviderVerificationStatus.VERIFIED,
-                    operationalStatus: ProviderOperationalStatus.AVAILABLE,
-                }).session(session).exec();
-                if (!provider || vehicle.status !== ProviderOperationalStatus.AVAILABLE || vehicle.activeIncidentId) {
-                    throw Object.assign(new Error('Vehicle/provider is not verified and available.'), { statusCode: 409 });
+                await RescueDispatchOfferModel.updateMany({ incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $lte: new Date() } }, { $set: { status: DispatchOfferStatus.EXPIRED, respondedAt: new Date(), responseNote: 'Offer expired before this dispatch wave.' } }, { session }).exec();
+                for (const vehicleId of vehicleIds) {
+                    const vehicle = await RescueVehicleModel.findById(vehicleId).session(session).exec();
+                    if (!vehicle)
+                        throw Object.assign(new Error(`Vehicle ${vehicleId} was not found.`), { statusCode: 404 });
+                    const provider = await RescueProviderModel.findOne({
+                        _id: vehicle.providerId,
+                        verificationStatus: ProviderVerificationStatus.VERIFIED,
+                        operationalStatus: ProviderOperationalStatus.AVAILABLE,
+                    }).session(session).exec();
+                    if (!provider || vehicle.status !== ProviderOperationalStatus.AVAILABLE || vehicle.activeIncidentId) {
+                        throw Object.assign(new Error(`Vehicle ${vehicle.registrationNumber} or its provider is not verified and available.`), { statusCode: 409 });
+                    }
+                    if (!vehicle.location || !vehicle.locationUpdatedAt || Date.now() - new Date(vehicle.locationUpdatedAt).getTime() > 5 * 60_000) {
+                        throw Object.assign(new Error(`Vehicle ${vehicle.registrationNumber} has missing or stale GPS. Update its location within the last five minutes before dispatch.`), { statusCode: 409 });
+                    }
+                    const duplicateVehicleOffer = await RescueDispatchOfferModel.findOne({ incidentId, vehicleId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() } }).session(session).exec();
+                    if (duplicateVehicleOffer)
+                        throw Object.assign(new Error(`Vehicle ${vehicle.registrationNumber} already has an active offer for this incident.`), { statusCode: 409 });
+                    const created = await RescueDispatchOfferModel.create([{
+                            incidentId: incident._id, providerId: provider._id, vehicleId: vehicle._id,
+                            offeredBy: new Types.ObjectId(dispatcherId), status: DispatchOfferStatus.PENDING,
+                            expiresAt: new Date(Date.now() + Math.min(300, Math.max(30, expiresInSeconds)) * 1000),
+                        }], { session });
+                    createdOffers.push(created[0]);
                 }
-                if (!vehicle.location || !vehicle.locationUpdatedAt || Date.now() - new Date(vehicle.locationUpdatedAt).getTime() > 5 * 60_000) {
-                    throw Object.assign(new Error('Vehicle location is missing or stale. Update GPS location within the last five minutes before dispatch.'), { statusCode: 409 });
-                }
-                await RescueDispatchOfferModel.updateMany({ incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $lte: new Date() } }, { $set: { status: DispatchOfferStatus.EXPIRED } }, { session }).exec();
-                const existing = await RescueDispatchOfferModel.findOne({
-                    incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() },
-                }).session(session).exec();
-                if (existing)
-                    throw Object.assign(new Error('A live offer already exists for this incident. Resolve it before creating another.'), { statusCode: 409 });
-                createdOffer = await RescueDispatchOfferModel.create([{
-                        incidentId: incident._id, providerId: provider._id, vehicleId: vehicle._id,
-                        offeredBy: new Types.ObjectId(dispatcherId), status: DispatchOfferStatus.PENDING,
-                        expiresAt: new Date(Date.now() + Math.min(300, Math.max(30, expiresInSeconds)) * 1000),
-                    }], { session }).then((items) => items[0]);
-                const changed = await RescueIncidentModel.findOneAndUpdate({ _id: incidentId, status: incident.status }, { $set: { status: IncidentStatus.OFFERED_TO_CREW }, $push: { events: {
+                const changed = await RescueIncidentModel.findOneAndUpdate({ _id: incidentId, status: incident.status, acceptedOfferId: { $exists: false } }, { $set: { status: IncidentStatus.OFFERED_TO_CREW }, $push: { events: {
                             status: IncidentStatus.OFFERED_TO_CREW, at: new Date(), actorType: 'STAFF',
-                            actorId: new Types.ObjectId(dispatcherId), note: 'Offer sent; crew has not yet confirmed.',
+                            actorId: new Types.ObjectId(dispatcherId), note: `Dispatcher-approved parallel offer wave sent to ${vehicleIds.length} eligible vehicle(s); acceptance and dispatcher confirmation are still pending.`,
                         } } }, { new: true, session }).exec();
                 if (!changed)
                     throw Object.assign(new Error('Incident changed concurrently. Refresh and try again.'), { statusCode: 409 });
@@ -415,9 +485,11 @@ export class MedxRescueService {
         finally {
             await session.endSession();
         }
-        await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId: dispatcherId, action: 'DISPATCH_OFFER_CREATED', metadata: { offerId: String(createdOffer._id), vehicleId } });
-        publishMedxRescueEvent({ type: 'dispatch.offer.created', incidentId, incidentReference, status: IncidentStatus.OFFERED_TO_CREW, offerId: String(createdOffer._id), vehicleId });
-        return createdOffer;
+        for (const offer of createdOffers) {
+            await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId: dispatcherId, action: 'DISPATCH_OFFER_CREATED', metadata: { offerId: String(offer._id), vehicleId: String(offer.vehicleId), parallelWaveSize: createdOffers.length } });
+            publishMedxRescueEvent({ type: 'dispatch.offer.created', incidentId, incidentReference, status: IncidentStatus.OFFERED_TO_CREW, offerId: String(offer._id), providerId: String(offer.providerId), vehicleId: String(offer.vehicleId) });
+        }
+        return Array.isArray(vehicleIdsInput) ? createdOffers : createdOffers[0];
     }
     async respondToOffer(offerId, providerId, vehicleId, accept, actorId, note) {
         const session = await mongoose.startSession();
@@ -432,8 +504,13 @@ export class MedxRescueService {
                     offer.respondedAt = new Date();
                     offer.responseNote = note?.slice(0, 500);
                     await offer.save({ session });
-                    await RescueIncidentModel.updateOne({ _id: offer.incidentId, status: IncidentStatus.OFFERED_TO_CREW }, { $set: { status: IncidentStatus.DISPATCH_REVIEW }, $push: { events: { status: IncidentStatus.DISPATCH_REVIEW, at: new Date(), actorType: 'CREW', actorId: new Types.ObjectId(actorId), note: 'Crew declined offer; dispatcher review required.' } } }, { session }).exec();
-                    result = offer;
+                    const remaining = await RescueDispatchOfferModel.countDocuments({ incidentId: offer.incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() } }).session(session).exec();
+                    let resultingStatus = IncidentStatus.OFFERED_TO_CREW;
+                    if (remaining === 0) {
+                        resultingStatus = IncidentStatus.DISPATCH_REVIEW;
+                        await RescueIncidentModel.updateOne({ _id: offer.incidentId, status: IncidentStatus.OFFERED_TO_CREW }, { $set: { status: IncidentStatus.DISPATCH_REVIEW }, $push: { events: { status: IncidentStatus.DISPATCH_REVIEW, at: new Date(), actorType: 'CREW', actorId: new Types.ObjectId(actorId), note: 'Crew declined and no other live offers remain; dispatcher review required.' } } }, { session }).exec();
+                    }
+                    result = { offer, incidentId: offer.incidentId, status: resultingStatus };
                     return;
                 }
                 const provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).session(session).exec();
@@ -449,21 +526,68 @@ export class MedxRescueService {
                 offer.respondedAt = new Date();
                 offer.responseNote = note?.slice(0, 500);
                 await offer.save({ session });
-                incident.status = IncidentStatus.CREW_CONFIRMED;
+                await RescueDispatchOfferModel.updateMany({ incidentId: incident._id, _id: { $ne: offer._id }, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.WITHDRAWN, respondedAt: new Date(), responseNote: 'Another crew accepted first; dispatcher confirmation is pending.' } }, { session }).exec();
+                incident.status = IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION;
                 incident.providerId = new Types.ObjectId(providerId);
                 incident.vehicleId = new Types.ObjectId(vehicleId);
                 incident.acceptedOfferId = offer._id;
-                incident.events.push({ status: IncidentStatus.CREW_CONFIRMED, at: new Date(), actorType: 'CREW', actorId: new Types.ObjectId(actorId), note: 'Verified crew explicitly accepted the dispatch offer.' });
+                incident.events.push({ status: IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, at: new Date(), actorType: 'CREW', actorId: new Types.ObjectId(actorId), note: 'Crew accepted; awaiting dispatcher validation and confirmation.' });
                 await incident.save({ session });
                 result = { offer, incident: this.publicIncident(incident) };
             });
             await audit({ actorType: 'CREW', actorId, action: accept ? 'DISPATCH_OFFER_ACCEPTED' : 'DISPATCH_OFFER_DECLINED', metadata: { offerId, providerId, vehicleId } });
-            publishMedxRescueEvent({ type: 'dispatch.offer.responded', incidentId: result?.incident?.id ? String(result.incident.id) : (result?.incidentId ? String(result.incidentId) : undefined), status: accept ? IncidentStatus.CREW_CONFIRMED : IncidentStatus.DISPATCH_REVIEW, offerId, providerId, vehicleId });
+            publishMedxRescueEvent({ type: 'dispatch.offer.responded', incidentId: result?.incident?.id ? String(result.incident.id) : (result?.incidentId ? String(result.incidentId) : undefined), status: accept ? IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION : (result?.status || IncidentStatus.DISPATCH_REVIEW), offerId, providerId, vehicleId });
             return result;
         }
         finally {
             await session.endSession();
         }
+    }
+    async confirmAcceptedAssignment(incidentId, dispatcherId, approve, reason) {
+        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(dispatcherId))
+            throw Object.assign(new Error('Valid incident and dispatcher IDs are required.'), { statusCode: 400 });
+        const session = await mongoose.startSession();
+        let updated;
+        let incidentReference = '';
+        let acceptedOfferId = '';
+        try {
+            await session.withTransaction(async () => {
+                const incident = await RescueIncidentModel.findOne({ _id: incidentId, status: IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, acceptedOfferId: { $exists: true }, providerId: { $exists: true }, vehicleId: { $exists: true } }).session(session).exec();
+                if (!incident)
+                    throw Object.assign(new Error('No crew acceptance is awaiting dispatcher confirmation for this incident.'), { statusCode: 409 });
+                const offer = await RescueDispatchOfferModel.findOne({ _id: incident.acceptedOfferId, incidentId, status: DispatchOfferStatus.ACCEPTED }).session(session).exec();
+                if (!offer)
+                    throw Object.assign(new Error('Accepted dispatch offer could not be verified.'), { statusCode: 409 });
+                acceptedOfferId = String(offer._id);
+                incidentReference = incident.publicReference;
+                if (approve) {
+                    incident.status = IncidentStatus.CREW_CONFIRMED;
+                    incident.events.push({ status: IncidentStatus.CREW_CONFIRMED, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(dispatcherId), note: `Dispatcher confirmed accepted crew and vehicle${reason ? `: ${reason.slice(0, 350)}` : '.'}` });
+                    updated = await incident.save({ session });
+                    await RescueDispatchOfferModel.updateMany({ incidentId, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.WITHDRAWN, respondedAt: new Date(), responseNote: 'Another crew was confirmed by the dispatcher.' } }, { session }).exec();
+                }
+                else {
+                    await RescueVehicleModel.updateOne({ _id: incident.vehicleId, activeIncidentId: incident._id }, { $set: { status: ProviderOperationalStatus.AVAILABLE }, $unset: { activeIncidentId: 1 } }, { session }).exec();
+                    offer.status = DispatchOfferStatus.WITHDRAWN;
+                    offer.respondedAt = new Date();
+                    offer.responseNote = reason?.slice(0, 500) || 'Dispatcher did not confirm this assignment.';
+                    await offer.save({ session });
+                    incident.providerId = undefined;
+                    incident.vehicleId = undefined;
+                    incident.acceptedOfferId = undefined;
+                    const remaining = await RescueDispatchOfferModel.countDocuments({ incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() } }).session(session).exec();
+                    incident.status = remaining > 0 ? IncidentStatus.OFFERED_TO_CREW : IncidentStatus.DISPATCH_REVIEW;
+                    incident.events.push({ status: incident.status, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(dispatcherId), note: `Dispatcher did not confirm the accepting crew${reason ? `: ${reason.slice(0, 350)}` : ''}. ${remaining > 0 ? 'Other provider offers remain active.' : 'Dispatcher review is required.'}` });
+                    updated = await incident.save({ session });
+                }
+            });
+        }
+        finally {
+            await session.endSession();
+        }
+        await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId: dispatcherId, action: approve ? 'DISPATCH_ASSIGNMENT_CONFIRMED' : 'DISPATCH_ASSIGNMENT_REJECTED', reason, metadata: { acceptedOfferId } });
+        publishMedxRescueEvent({ type: 'incident.changed', incidentId, incidentReference, status: updated.status, providerId: updated.providerId ? String(updated.providerId) : undefined, vehicleId: updated.vehicleId ? String(updated.vehicleId) : undefined });
+        return updated;
     }
     async createFacility(input, ownerAccountId, activeByDefault = false) {
         if (!Types.ObjectId.isValid(ownerAccountId))
@@ -591,9 +715,51 @@ export class MedxRescueService {
         finally {
             await session.endSession();
         }
+        if (incident.vehicleId) {
+            // Handover ends this incident's tracking relationship. Keep the vehicle offline until its crew/provider explicitly marks it available again.
+            await RescueVehicleModel.updateOne({ _id: incident.vehicleId, activeIncidentId: incident._id }, { $set: { status: ProviderOperationalStatus.OFFLINE }, $unset: { activeIncidentId: 1 } }).exec();
+        }
         await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId, action: 'CLINICAL_HANDOVER_RECORDED', metadata: { facilityId, handoverId: String(handover._id) } });
         publishMedxRescueEvent({ type: 'handover.created', incidentId, facilityId, accountId: String(facility.ownerAccountId), status: IncidentStatus.HANDED_OVER });
         return handover;
+    }
+    async listDispatchEligibleVehicles(incidentId) {
+        let incident;
+        if (incidentId) {
+            if (!Types.ObjectId.isValid(incidentId))
+                throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+            incident = await RescueIncidentModel.findById(incidentId).select('status acceptedOfferId location landmark locationDescription triageAnswers triageSuggestedUrgency priority').lean().exec();
+            if (!incident)
+                throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+            if (![IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.NO_RESOURCE_AVAILABLE, IncidentStatus.OFFERED_TO_CREW].includes(incident.status) || incident.acceptedOfferId) {
+                throw Object.assign(new Error('This incident is not accepting new provider offers.'), { statusCode: 409 });
+            }
+        }
+        const providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
+        if (!providers.length)
+            return [];
+        const freshAfter = new Date(Date.now() - 5 * 60_000);
+        const vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true }, locationUpdatedAt: { $gte: freshAfter } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+        const providerById = new Map(providers.map((provider) => [String(provider._id), provider]));
+        const incidentCoords = incident?.location?.coordinates;
+        const distanceKm = (a, b) => {
+            const radians = (v) => v * Math.PI / 180;
+            const [lon1, lat1] = a;
+            const [lon2, lat2] = b;
+            const dLat = radians(lat2 - lat1);
+            const dLon = radians(lon2 - lon1);
+            const h = Math.sin(dLat / 2) ** 2 + Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(dLon / 2) ** 2;
+            return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+        };
+        return vehicles.map((vehicle) => {
+            const provider = providerById.get(String(vehicle.providerId));
+            const km = incidentCoords && vehicle.location?.coordinates?.length === 2 ? distanceKm(incidentCoords, vehicle.location.coordinates) : undefined;
+            return { ...vehicle, provider: provider ? { id: String(provider._id), displayName: provider.displayName, operatingAreas: provider.operatingAreas } : undefined, distanceKm: km === undefined ? undefined : Math.round(km * 10) / 10, gpsFreshness: 'FRESH', requiresDispatcherSuitabilityReview: true };
+        }).sort((a, b) => {
+            if (typeof a.distanceKm === 'number' && typeof b.distanceKm === 'number')
+                return a.distanceKm - b.distanceKm;
+            return new Date(b.locationUpdatedAt).getTime() - new Date(a.locationUpdatedAt).getTime();
+        });
     }
     async listProviderVehicles(providerId) { return RescueVehicleModel.find({ providerId }).sort({ createdAt: -1 }).lean().exec(); }
     async listProvidersForReview() { return RescueProviderModel.find({ verificationStatus: { $in: [ProviderVerificationStatus.PENDING, ProviderVerificationStatus.UNDER_REVIEW] } }).sort({ createdAt: 1 }).lean().exec(); }
@@ -604,10 +770,23 @@ export class MedxRescueService {
             throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
         if ([IncidentStatus.HANDED_OVER, IncidentStatus.CANCELLED].includes(incident.status))
             throw Object.assign(new Error('Location cannot be updated for a closed incident.'), { statusCode: 409 });
-        incident.location = geoPoint(input.latitude, input.longitude);
+        const hasCoordinates = input.latitude !== undefined && input.latitude !== null && input.latitude !== '' && input.longitude !== undefined && input.longitude !== null && input.longitude !== '';
+        const landmark = typeof input.landmark === 'string' ? input.landmark.trim().slice(0, 500) : '';
+        const locationDescription = typeof input.locationDescription === 'string' ? input.locationDescription.trim().slice(0, 500) : '';
+        if (!hasCoordinates && !landmark && !locationDescription)
+            throw Object.assign(new Error('Provide coordinates, a landmark, or a location description.'), { statusCode: 400 });
+        if (hasCoordinates)
+            incident.location = geoPoint(input.latitude, input.longitude);
         if (typeof input.landmark === 'string')
-            incident.landmark = input.landmark.trim().slice(0, 500);
-        incident.locationAccuracyMeters = input.accuracyMeters === undefined ? undefined : Math.max(0, Math.min(100000, Number(input.accuracyMeters)));
+            incident.landmark = landmark;
+        if (typeof input.locationDescription === 'string')
+            incident.locationDescription = locationDescription;
+        if (input.accuracyMeters !== undefined) {
+            const accuracy = Number(input.accuracyMeters);
+            if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100000)
+                throw Object.assign(new Error('Location accuracy must be between 0 and 100000 metres.'), { statusCode: 400 });
+            incident.locationAccuracyMeters = accuracy;
+        }
         await incident.save();
         await audit({ incidentId: incident._id, actorType: 'GUEST', action: 'GUEST_LOCATION_UPDATED' });
         publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, providerId: incident.providerId ? String(incident.providerId) : undefined, vehicleId: incident.vehicleId ? String(incident.vehicleId) : undefined });

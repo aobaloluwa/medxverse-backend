@@ -3,6 +3,7 @@ export var IncidentStatus;
     IncidentStatus["REQUEST_RECEIVED"] = "REQUEST_RECEIVED";
     IncidentStatus["DISPATCH_REVIEW"] = "DISPATCH_REVIEW";
     IncidentStatus["OFFERED_TO_CREW"] = "OFFERED_TO_CREW";
+    IncidentStatus["CREW_ACCEPTED_PENDING_CONFIRMATION"] = "CREW_ACCEPTED_PENDING_CONFIRMATION";
     IncidentStatus["CREW_CONFIRMED"] = "CREW_CONFIRMED";
     IncidentStatus["EN_ROUTE"] = "EN_ROUTE";
     IncidentStatus["ON_SCENE"] = "ON_SCENE";

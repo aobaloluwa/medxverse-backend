@@ -78,6 +78,15 @@ export class MedxRescueController {
     }
     catch (error) { sendError(res, error); }
   }
+  async recordEmergencyEscalation(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      const channel = String(req.body?.channel || '');
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+      const data = await medxRescueService.recordEmergencyEscalation(String(req.params.id), actorId(req), channel, reason);
+      res.status(201).json({ success: true, data, message: 'Fallback escalation was recorded. This records the action; it does not itself place a phone call or contact emergency services.' });
+    } catch (error) { sendError(res, error); }
+  }
   async updateIncidentPriority(req: Request, res: Response): Promise<void> {
     if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {
@@ -241,9 +250,24 @@ export class MedxRescueController {
       const data = await medxRescueService.updateVehicleLocation(String(req.params.vehicleId), providerId, req.body || {}); res.json({ success: true, data });
     } catch (error) { sendError(res, error); }
   }
+  async confirmAcceptedAssignment(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      if (typeof req.body?.approve !== 'boolean') { res.status(400).json({ success: false, message: 'approve must be true or false.' }); return; }
+      const data = await medxRescueService.confirmAcceptedAssignment(String(req.params.id), actorId(req), req.body.approve, typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+      res.json({ success: true, data, message: req.body.approve ? 'Assignment confirmed by dispatcher.' : 'Assignment not confirmed; incident returned to active offers or dispatcher review.' });
+    } catch (error) { sendError(res, error); }
+  }
+  async listDispatchEligibleVehicles(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      const incidentId = typeof req.query.incidentId === 'string' ? req.query.incidentId : undefined;
+      res.json({ success: true, data: await medxRescueService.listDispatchEligibleVehicles(incidentId), message: 'Candidates have verified providers, available vehicles, and fresh GPS. Dispatcher must still review coverage and clinical/operational suitability before sending offers.' });
+    } catch (error) { sendError(res, error); }
+  }
   async createDispatchOffer(req: Request, res: Response): Promise<void> {
     if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
-    try { const data = await medxRescueService.createDispatchOffer(String(req.params.id), String(req.body?.vehicleId || ''), actorId(req), Number(req.body?.expiresInSeconds) || 90); res.status(201).json({ success: true, data, message: 'Offer sent. Do not display dispatch as confirmed until the crew accepts.' }); } catch (error) { sendError(res, error); }
+    try { const vehicleIds = Array.isArray(req.body?.vehicleIds) ? req.body.vehicleIds.map(String) : String(req.body?.vehicleId || ''); const data = await medxRescueService.createDispatchOffer(String(req.params.id), vehicleIds, actorId(req), Number(req.body?.expiresInSeconds) || 90); res.status(201).json({ success: true, data, message: 'Dispatcher-approved offer wave sent. Dispatch remains unconfirmed until a crew accepts and the dispatcher confirms the assignment.' }); } catch (error) { sendError(res, error); }
   }
   async listOffers(req: Request, res: Response): Promise<void> {
     if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;

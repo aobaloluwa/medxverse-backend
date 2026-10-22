@@ -85,3 +85,28 @@ A crew decline returns the incident to dispatcher review. A dispatcher can mark 
 8. Run `npm ci` and `npm run build` in the complete backend project, then integration tests against MongoDB configured as a replica set/Atlas. The current environment could not complete dependency installation, so a full compile has not been verified here.
 
 This is an engineering foundation, not a substitute for clinical governance, a verified live fleet, an approved dispatch centre, or operational launch approval.
+
+
+## Dispatch workflow changes (2026-10-22)
+
+- A dispatcher creates offers only after reviewing/selecting eligible providers. Send a parallel first wave with `POST /api/v1/medxrescue/incidents/:id/dispatch-offers` and `{ "vehicleIds": ["vehicleObjectId1", "vehicleObjectId2"], "expiresInSeconds": 60 }`. The legacy `{ "vehicleId": "..." }` request remains supported.
+- A provider acceptance moves the incident to `CREW_ACCEPTED_PENDING_CONFIRMATION`; it is not yet shown as crew-confirmed to the guest.
+- A dispatcher must call `PATCH /api/v1/medxrescue/incidents/:id/assignment-confirmation` with `{ "approve": true, "reason": "..." }` to confirm. Use `{ "approve": false, "reason": "..." }` to reject the acceptance and release the reserved vehicle.
+- `triageAnswers` can be submitted as an array of `{ "questionId": "...", "answer": "..." }`. The server only derives a conservative `triageSuggestedUrgency` red-flag hint for configured question IDs; the final `triageUrgency` remains `UNKNOWN` until dispatcher review. A dispatcher priority update records reviewer and review time. The pilot's clinical-safety lead must approve the question set and rules before live use.
+- Public status remains unconfirmed until the dispatcher confirms the crew and vehicle. GPS freshness must be evaluated separately from assignment status.
+
+### Required MongoDB index migration
+
+The previous release created a unique partial index that allowed only one `PENDING` offer per incident. Remove that legacy index before deploying parallel-offer behavior, or MongoDB will continue rejecting the second offer even though the Mongoose schema no longer declares it:
+
+```javascript
+db.rescuedispatchoffers.dropIndex("incidentId_1")
+```
+
+Confirm the actual index name with `db.rescuedispatchoffers.getIndexes()` first. Do not drop unrelated indexes. This source ZIP contains `src/` only, so apply the migration through the project's approved database migration procedure.
+
+- Guest intake accepts GPS coordinates or a manually supplied landmark/location description. GPS is not mandatory for creating a request; the dispatcher must establish a usable location before selecting a response.
+
+- Dispatcher candidate endpoint: `GET /api/v1/medxrescue/dispatch/eligible-vehicles?incidentId=<id>`. It returns verified providers' available vehicles with GPS no older than five minutes and sorts by straight-line distance when incident GPS is available. This is a shortlist aid, not proof of road ETA, coverage, clinical suitability, or dispatch; the dispatcher must review those factors.
+
+- Dispatcher fallback record: `POST /api/v1/medxrescue/incidents/:id/escalations` with `{ "channel": "112" | "PHONE_DISPATCH" | "MANUAL_PROVIDER_CONTACT" | "OTHER", "reason": "..." }`. This creates an audit record and event only; it does not itself call 112 or contact a provider. Configured triage red-flag suggestions emit an `incident.escalation.required` event for dispatcher attention.
