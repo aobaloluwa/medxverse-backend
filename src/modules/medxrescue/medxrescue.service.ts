@@ -188,7 +188,7 @@ export class MedxRescueService {
     const result = this.publicIncident(incident) as Record<string, any>;
     // Guest tracking is incident-scoped and is exposed only after dispatcher-confirmed assignment.
     if ([IncidentStatus.CREW_CONFIRMED, IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING].includes(incident.status) && result.crewConfirmed && incident.vehicleId) {
-      const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId, activeIncidentId: incident._id }).select('location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+      const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId, activeIncidentId: incident._id }).select('location locationUpdatedAt locationAccuracyMeters status').lean().exec() as any;
       if (vehicle?.location?.coordinates?.length === 2 && vehicle.locationUpdatedAt) {
         const updatedAt = new Date(vehicle.locationUpdatedAt);
         const ageMs = Math.max(0, Date.now() - updatedAt.getTime());

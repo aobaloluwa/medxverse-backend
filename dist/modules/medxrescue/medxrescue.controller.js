@@ -6,9 +6,42 @@ const sendError = (res, error) => {
     const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
     res.status(status).json({ success: false, message: status >= 500 ? 'MedxRescue request could not be completed.' : err.message || 'Request failed.' });
 };
-const actorId = (req) => String(req.user?._id || '');
-const accountIdOf = (req) => String(req.user?.accountId || req.user?.hospitalId || '');
-const roleOf = (req) => String(req.user?.role || req.account?.role || req.user?.accountType || req.account?.accountType || '').trim().toUpperCase();
+const actorId = (req) => {
+    const auth = req;
+    return String(auth.user?._id || auth.user?.accountId || auth.account?.accountId || '');
+};
+const accountIdOf = (req) => {
+    const auth = req;
+    return String(auth.user?.accountId || auth.user?.hospitalId || auth.account?.accountId || '');
+};
+/**
+ * Resolve the actual MedXRescue permission role from the authenticated token.
+ *
+ * Hospital-account login tokens are intentionally issued with userType=ACCOUNT
+ * and accountType=HOSPITAL; they do not carry a staff `role`. Treat that
+ * account owner as HOSPITAL_ADMIN for hospital-scoped operational actions.
+ * Do NOT apply this mapping to userType=STAFF: doctors/nurses must have an
+ * explicit dispatcher/admin role before accessing restricted dispatch tools.
+ */
+const roleOf = (req) => {
+    const auth = req;
+    const user = auth.user;
+    const account = auth.account;
+    const userType = String(user?.userType || account?.userType || '').trim().toUpperCase();
+    const accountType = String(user?.accountType || account?.accountType || '').trim().toUpperCase();
+    const explicitRole = String(user?.role || account?.role || '').trim().toUpperCase();
+    if (explicitRole) {
+        if (userType === 'ACCOUNT' && accountType === 'HOSPITAL' && explicitRole === 'HOSPITAL') {
+            return 'HOSPITAL_ADMIN';
+        }
+        return explicitRole;
+    }
+    if (userType === 'ACCOUNT' && accountType === 'HOSPITAL')
+        return 'HOSPITAL_ADMIN';
+    if (userType === 'ACCOUNT' && accountType === 'HMO')
+        return 'HMO';
+    return accountType;
+};
 const platformAdmin = (req) => ['ADMIN', 'SYSTEM_ADMIN'].includes(roleOf(req));
 const requireStaffRole = (req, res, roles) => {
     if (!actorId(req) || !roles.includes(roleOf(req))) {
