@@ -215,7 +215,13 @@ export class MedxRescueService {
     if (hospitalAccountId !== undefined) {
       if (!Types.ObjectId.isValid(hospitalAccountId)) throw Object.assign(new Error('Hospital account context is missing.'), { statusCode: 403 });
       const facilities = await RescueFacilityModel.find({ ownerAccountId: new Types.ObjectId(hospitalAccountId) }).select('_id').lean().exec();
-      filter.destinationFacilityId = { $in: facilities.map((facility) => facility._id) };
+      const facilityIds = facilities.map((facility) => facility._id);
+      // Include unassigned incoming emergency SOS requests AND requests assigned to this hospital
+      filter.$or = [
+        { destinationFacilityId: { $in: facilityIds } },
+        { destinationFacilityId: { $exists: false } },
+        { destinationFacilityId: null },
+      ];
     }
     const [incidents, total] = await Promise.all([
       RescueIncidentModel.aggregate([
@@ -862,8 +868,67 @@ export class MedxRescueService {
         results.push(created);
       }
     }
+
+    // Seed Sample Patient Emergency Incidents into the Dispatch Console Queue
+    const demoIncidents = [
+      {
+        publicReference: 'MRX-SOS-9921',
+        chiefComplaint: 'Acute Chest Pain & Severe Difficulty Breathing',
+        landmark: 'Ikeja City Mall, Alausa, Ikeja',
+        callerName: 'Obaloluwa Ajayi',
+        callerPhone: '+2348012345678',
+        priority: IncidentPriority.CRITICAL,
+        triageUrgency: 'IMMEDIATE',
+        triageSuggestedUrgency: 'IMMEDIATE',
+        intakeChannel: 'APP_SOS',
+        location: { type: 'Point', coordinates: [3.3515, 6.6018] },
+        status: IncidentStatus.DISPATCH_REVIEW,
+      },
+      {
+        publicReference: 'MRX-SOS-3312',
+        chiefComplaint: 'Road Traffic Collision & Uncontrolled Bleeding',
+        landmark: 'Ahmadu Bello Way, Victoria Island',
+        callerName: 'Emmanuel Obaloluwa',
+        callerPhone: '+2348023456789',
+        priority: IncidentPriority.CRITICAL,
+        triageUrgency: 'IMMEDIATE',
+        triageSuggestedUrgency: 'IMMEDIATE',
+        intakeChannel: 'APP_SOS',
+        location: { type: 'Point', coordinates: [3.4246, 6.4549] },
+        status: IncidentStatus.REQUEST_RECEIVED,
+      },
+      {
+        publicReference: 'MRX-SOS-4418',
+        chiefComplaint: 'High Fever, Convulsions & Respiratory Distress',
+        landmark: 'Lekki Phase 1 Gate, Lekki',
+        callerName: 'Grace Adenike',
+        callerPhone: '+2348034567890',
+        priority: IncidentPriority.URGENT,
+        triageUrgency: 'URGENT',
+        triageSuggestedUrgency: 'URGENT',
+        intakeChannel: 'APP_SOS',
+        location: { type: 'Point', coordinates: [3.4750, 6.4350] },
+        status: IncidentStatus.DISPATCH_REVIEW,
+      },
+    ];
+
+    for (const inc of demoIncidents) {
+      const existing = await RescueIncidentModel.findOne({ publicReference: inc.publicReference }).exec();
+      if (!existing) {
+        await RescueIncidentModel.create({
+          ...inc,
+          callerIsPatient: true,
+          guestTokenHash: sha256('demo-token-' + inc.publicReference),
+          guestTokenExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          idempotencyKey: 'demo-idempotency-' + inc.publicReference,
+          idempotencyFingerprint: sha256('demo-fingerprint-' + inc.publicReference),
+          events: [{ status: inc.status, at: new Date(), actorType: 'GUEST', note: 'Emergency request received via Patient SOS App.' }],
+        });
+      }
+    }
+
     publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(provider._id) });
-    return { provider, vehicles: results };
+    return { provider, vehicles: results, seededIncidentsCount: demoIncidents.length };
   }
 }
 export const medxRescueService = new MedxRescueService();
