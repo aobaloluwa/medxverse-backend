@@ -738,5 +738,133 @@ export class MedxRescueService {
     publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, providerId: incident.providerId ? String(incident.providerId) : undefined, vehicleId: incident.vehicleId ? String(incident.vehicleId) : undefined });
     return this.publicIncident(incident);
   }
+
+  async listLiveFleet(query: Record<string, unknown> = {}) {
+    const vehicles = await RescueVehicleModel.find({ location: { $exists: true } })
+      .populate('providerId', 'displayName legalName operatingAreas verificationStatus operationalStatus')
+      .populate('activeIncidentId', 'publicReference status priority chiefComplaint location landmark')
+      .sort({ locationUpdatedAt: -1 })
+      .limit(300)
+      .lean()
+      .exec();
+
+    const activeIncidents = await RescueIncidentModel.find({
+      status: { $in: [
+        IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.OFFERED_TO_CREW,
+        IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, IncidentStatus.CREW_CONFIRMED,
+        IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING,
+      ] },
+      location: { $exists: true },
+    }).select('publicReference status priority chiefComplaint location landmark locationDescription callerPhone createdAt vehicleId providerId')
+      .populate('vehicleId', 'registrationNumber makeModel vehicleClass location')
+      .lean()
+      .exec();
+
+    const facilities = await RescueFacilityModel.find({ active: true })
+      .select('name facilityType address location capabilities emergencyContactPhone')
+      .lean()
+      .exec();
+
+    return {
+      vehicles: vehicles.map((v: any) => {
+        const updatedAt = v.locationUpdatedAt ? new Date(v.locationUpdatedAt) : null;
+        const ageMs = updatedAt ? Math.max(0, Date.now() - updatedAt.getTime()) : Infinity;
+        return {
+          id: String(v._id),
+          registrationNumber: v.registrationNumber,
+          makeModel: v.makeModel,
+          vehicleClass: v.vehicleClass,
+          status: v.status,
+          location: v.location,
+          locationUpdatedAt: v.locationUpdatedAt,
+          locationAccuracyMeters: v.locationAccuracyMeters,
+          freshness: ageMs <= 30_000 ? 'LIVE' : ageMs <= 180_000 ? 'DELAYED' : 'STALE',
+          provider: v.providerId ? { id: String(v.providerId._id), displayName: v.providerId.displayName, legalName: v.providerId.legalName } : undefined,
+          activeIncident: v.activeIncidentId ? { id: String(v.activeIncidentId._id), reference: v.activeIncidentId.publicReference, status: v.activeIncidentId.status, priority: v.activeIncidentId.priority, chiefComplaint: v.activeIncidentId.chiefComplaint, location: v.activeIncidentId.location } : undefined,
+        };
+      }),
+      incidents: activeIncidents.map((inc: any) => ({
+        id: String(inc._id),
+        reference: inc.publicReference,
+        status: inc.status,
+        priority: inc.priority,
+        chiefComplaint: inc.chiefComplaint,
+        landmark: inc.landmark || inc.locationDescription,
+        location: inc.location,
+        createdAt: inc.createdAt,
+        vehicle: inc.vehicleId ? { id: String(inc.vehicleId._id), registrationNumber: inc.vehicleId.registrationNumber, makeModel: inc.vehicleId.makeModel, location: inc.vehicleId.location } : undefined,
+      })),
+      facilities: facilities.map((f: any) => ({
+        id: String(f._id),
+        name: f.name,
+        facilityType: f.facilityType,
+        address: f.address,
+        location: f.location,
+        capabilities: f.capabilities,
+        phone: f.emergencyContactPhone,
+      })),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  async seedDemoFleet() {
+    let provider = await RescueProviderModel.findOne({ displayName: 'MedXRescue Core Fleet' }).exec();
+    if (!provider) {
+      provider = await RescueProviderModel.create({
+        legalName: 'MedXRescue Emergency Services Ltd',
+        displayName: 'MedXRescue Core Fleet',
+        registrationNumber: 'RC-998241',
+        contactName: 'Nexus Dispatch Command',
+        contactPhone: '+2348009990000',
+        contactEmail: 'dispatch@medxrescue.ng',
+        operatingAreas: ['Lagos Island', 'Ikeja', 'Lekki', 'Surulere', 'Abuja Central', 'Port Harcourt'],
+        verificationStatus: ProviderVerificationStatus.VERIFIED,
+        operationalStatus: ProviderOperationalStatus.AVAILABLE,
+      });
+    } else {
+      provider.verificationStatus = ProviderVerificationStatus.VERIFIED;
+      provider.operationalStatus = ProviderOperationalStatus.AVAILABLE;
+      await provider.save();
+    }
+
+    const demoVehicles = [
+      { reg: 'AMB-001-LX', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 6.5244, lng: 3.3792 }, // Ikeja/Lagos
+      { reg: 'AMB-002-LX', make: 'Toyota HiAce BLS', cls: RescueVehicleClass.BASIC_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 6.4549, lng: 3.4246 }, // Victoria Island
+      { reg: 'AMB-003-LX', make: 'Ford Transit ICU', cls: RescueVehicleClass.ICU_AMBULANCE, status: ProviderOperationalStatus.AVAILABLE, lat: 6.4350, lng: 3.4750 }, // Lekki Phase 1
+      { reg: 'AMB-004-ABJ', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 9.0765, lng: 7.3986 }, // Abuja Central
+      { reg: 'AMB-005-PHC', make: 'Nissan NV350 Transport', cls: RescueVehicleClass.PATIENT_TRANSPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 4.8156, lng: 7.0498 }, // Port Harcourt
+      { reg: 'AMB-006-LX', make: 'Peugeot Boxer Neonatal', cls: RescueVehicleClass.NEONATAL, status: ProviderOperationalStatus.AVAILABLE, lat: 6.5000, lng: 3.3500 }, // Yaba/Surulere
+    ];
+
+    const results = [];
+    for (const v of demoVehicles) {
+      const existing = await RescueVehicleModel.findOne({ registrationNumber: v.reg }).exec();
+      if (existing) {
+        existing.status = v.status;
+        existing.location = { type: 'Point', coordinates: [v.lng, v.lat] };
+        existing.locationUpdatedAt = new Date();
+        existing.locationAccuracyMeters = 5;
+        await existing.save();
+        results.push(existing);
+      } else {
+        const created = await RescueVehicleModel.create({
+          providerId: provider._id,
+          registrationNumber: v.reg,
+          makeModel: v.make,
+          vehicleClass: v.cls,
+          equipment: ['Defibrillator', 'Ventilator', 'ECG Monitor', 'Oxygen Cylinder', 'Trauma Kit'],
+          crewQualifications: ['Paramedic', 'Emergency Medical Technician', 'Advanced Trauma Driver'],
+          status: v.status,
+          location: { type: 'Point', coordinates: [v.lng, v.lat] },
+          locationUpdatedAt: new Date(),
+          locationAccuracyMeters: 5,
+        });
+        results.push(created);
+      }
+    }
+    publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(provider._id) });
+    return { provider, vehicles: results };
+  }
 }
 export const medxRescueService = new MedxRescueService();
+

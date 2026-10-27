@@ -331,5 +331,18 @@ export class MedxRescueController {
       res.json({ success: true, data });
     } catch (error) { sendError(res, error); }
   }
+  async listLiveFleet(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.listLiveFleet(req.query as Record<string, unknown>) });
+    } catch (error) { sendError(res, error); }
+  }
+  async seedDemoFleet(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.seedDemoFleet(), message: 'Demo operational fleet seeded successfully.' });
+    } catch (error) { sendError(res, error); }
+  }
 }
 export const medxRescueController = new MedxRescueController();
+

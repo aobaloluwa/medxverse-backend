@@ -42,5 +42,7 @@ router.get('/facilities/:facilityId/acceptances', (req, res) => void medxRescueC
 router.patch('/facilities/:facilityId/acceptances/:acceptanceId/respond', (req, res) => void medxRescueController.respondToFacilityAcceptance(req, res));
 router.get('/dispatch-offers', (req, res) => void medxRescueController.listOffers(req, res));
 router.post('/dispatch-offers/:offerId/respond', (req, res) => void medxRescueController.respondToOffer(req, res));
+router.get('/fleet/live', (req, res) => void medxRescueController.listLiveFleet(req, res));
+router.post('/fleet/seed-demo', (req, res) => void medxRescueController.seedDemoFleet(req, res));
 
 export default router;
