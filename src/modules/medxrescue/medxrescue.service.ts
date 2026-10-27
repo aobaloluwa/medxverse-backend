@@ -183,6 +183,9 @@ export class MedxRescueService {
   }
 
   async getGuestIncident(reference: string, token: string) {
+    await this.expireStaleIncidents();
+    await this.expirePendingOffers();
+
     const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
     if (!incident || !safeEqual(incident.guestTokenHash, sha256(token))) throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
     const result = this.publicIncident(incident) as Record<string, any>;
@@ -208,6 +211,9 @@ export class MedxRescueService {
   }
 
   async listIncidents(query: Record<string, unknown>, hospitalAccountId?: string) {
+    await this.expireStaleIncidents();
+    await this.expirePendingOffers();
+
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 30));
     const filter: Record<string, unknown> = {};
@@ -264,6 +270,69 @@ export class MedxRescueService {
       processed += 1;
     }
     return processed;
+  }
+
+  async expireStaleIncidents() {
+    const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+    const staleIncidents = await RescueIncidentModel.find({
+      status: { $in: [
+        IncidentStatus.REQUEST_RECEIVED,
+        IncidentStatus.DISPATCH_REVIEW,
+        IncidentStatus.OFFERED_TO_CREW,
+        IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION,
+      ] },
+      createdAt: { $lte: twentyMinutesAgo },
+    }).select('_id publicReference status vehicleId').limit(100).exec();
+
+    let count = 0;
+    const now = new Date();
+
+    for (const incident of staleIncidents) {
+      const updated = await RescueIncidentModel.findOneAndUpdate(
+        { _id: incident._id, status: incident.status, createdAt: { $lte: twentyMinutesAgo } },
+        {
+          $set: { status: IncidentStatus.NO_RESOURCE_AVAILABLE, cancelledAt: now },
+          $push: { events: {
+            status: IncidentStatus.NO_RESOURCE_AVAILABLE,
+            at: now,
+            actorType: 'SYSTEM',
+            note: 'Emergency request expired: No hospital or ambulance accepted within 20 minutes.',
+          } },
+        },
+        { new: true },
+      ).exec();
+
+      if (updated) {
+        await RescueDispatchOfferModel.updateMany(
+          { incidentId: incident._id, status: DispatchOfferStatus.PENDING },
+          { $set: { status: DispatchOfferStatus.EXPIRED, respondedAt: now, responseNote: 'Incident expired after 20 minutes timeout.' } },
+        ).exec();
+
+        if (updated.vehicleId) {
+          await RescueVehicleModel.updateOne(
+            { _id: updated.vehicleId, activeIncidentId: updated._id },
+            { $set: { status: ProviderOperationalStatus.AVAILABLE }, $unset: { activeIncidentId: 1 } },
+          ).exec();
+        }
+
+        await audit({
+          incidentId: updated._id,
+          actorType: 'SYSTEM',
+          action: 'INCIDENT_EXPIRED_20MIN_TIMEOUT',
+          reason: 'Request expired: No hospital or crew confirmed assignment within 20 minutes.',
+        });
+
+        publishMedxRescueEvent({
+          type: 'incident.changed',
+          incidentId: String(updated._id),
+          incidentReference: updated.publicReference,
+          status: updated.status,
+        });
+
+        count += 1;
+      }
+    }
+    return count;
   }
 
   async recordEmergencyEscalation(id: string, actorId: string, channel: string, reason?: string) {
@@ -746,6 +815,9 @@ export class MedxRescueService {
   }
 
   async listLiveFleet(query: Record<string, unknown> = {}) {
+    await this.expireStaleIncidents();
+    await this.expirePendingOffers();
+
     const vehicles = await RescueVehicleModel.find({ location: { $exists: true } })
       .populate('providerId', 'displayName legalName operatingAreas verificationStatus operationalStatus')
       .populate('activeIncidentId', 'publicReference status priority chiefComplaint location landmark')
@@ -814,16 +886,16 @@ export class MedxRescueService {
   }
 
   async seedDemoFleet() {
-    let provider = await RescueProviderModel.findOne({ displayName: 'MedXRescue Core Fleet' }).exec();
+    let provider = await RescueProviderModel.findOne({ displayName: 'MedXRescue Core Fleet Ogbomoso' }).exec();
     if (!provider) {
       provider = await RescueProviderModel.create({
-        legalName: 'MedXRescue Emergency Services Ltd',
-        displayName: 'MedXRescue Core Fleet',
+        legalName: 'MedXRescue Ogbomoso Emergency Services Ltd',
+        displayName: 'MedXRescue Core Fleet Ogbomoso',
         registrationNumber: 'RC-998241',
-        contactName: 'Nexus Dispatch Command',
+        contactName: 'Ogbomoso Dispatch Command',
         contactPhone: '+2348009990000',
-        contactEmail: 'dispatch@medxrescue.ng',
-        operatingAreas: ['Lagos Island', 'Ikeja', 'Lekki', 'Surulere', 'Abuja Central', 'Port Harcourt'],
+        contactEmail: 'dispatch@medxrescue-ogbomoso.ng',
+        operatingAreas: ['Ogbomoso Central', 'LAUTECH Area', 'Takie', 'BUTH', 'Sabo', 'Caretaker', 'Oyo Town', 'Ibadan'],
         verificationStatus: ProviderVerificationStatus.VERIFIED,
         operationalStatus: ProviderOperationalStatus.AVAILABLE,
       });
@@ -833,13 +905,49 @@ export class MedxRescueService {
       await provider.save();
     }
 
+    // Seed Demo Facilities in Ogbomoso, Oyo State
+    const demoFacilities = [
+      {
+        name: 'LAUTECH Teaching Hospital (LTH), Ogbomoso',
+        facilityType: 'TERTIARY_HOSPITAL',
+        address: 'Ogbomoso-Ilorin Road, LAUTECH Campus, Ogbomoso, Oyo State',
+        emergencyContactPhone: '+2348033331111',
+        capabilities: ['Trauma Center', 'ICU', 'Emergency Surgery', 'Cardiac Life Support', 'Neonatal Care'],
+        location: { type: 'Point', coordinates: [4.2620, 8.1580] },
+      },
+      {
+        name: 'Bowen University Teaching Hospital (BUTH), Ogbomoso',
+        facilityType: 'SECONDARY_HOSPITAL',
+        address: 'BUTH Area, Takie-Sabo Road, Ogbomoso, Oyo State',
+        emergencyContactPhone: '+2348033332222',
+        capabilities: ['Emergency ED', 'Advanced Life Support', 'Maternal Emergency', 'Surgery'],
+        location: { type: 'Point', coordinates: [4.2480, 8.1290] },
+      },
+      {
+        name: 'State General Hospital, Ogbomoso',
+        facilityType: 'SECONDARY_HOSPITAL',
+        address: 'General Hospital Road, Caretaker, Ogbomoso, Oyo State',
+        emergencyContactPhone: '+2348033333333',
+        capabilities: ['General Emergency', 'Ambulance Base', 'Trauma Bay'],
+        location: { type: 'Point', coordinates: [4.2510, 8.1390] },
+      },
+    ];
+
+    for (const fac of demoFacilities) {
+      const existing = await RescueFacilityModel.findOne({ name: fac.name }).exec();
+      if (!existing) {
+        await RescueFacilityModel.create({ ...fac, active: true });
+      }
+    }
+
+    // Seed Demo Ambulances in Ogbomoso, Oyo State
     const demoVehicles = [
-      { reg: 'AMB-001-LX', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 6.5244, lng: 3.3792 }, // Ikeja/Lagos
-      { reg: 'AMB-002-LX', make: 'Toyota HiAce BLS', cls: RescueVehicleClass.BASIC_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 6.4549, lng: 3.4246 }, // Victoria Island
-      { reg: 'AMB-003-LX', make: 'Ford Transit ICU', cls: RescueVehicleClass.ICU_AMBULANCE, status: ProviderOperationalStatus.AVAILABLE, lat: 6.4350, lng: 3.4750 }, // Lekki Phase 1
-      { reg: 'AMB-004-ABJ', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 9.0765, lng: 7.3986 }, // Abuja Central
-      { reg: 'AMB-005-PHC', make: 'Nissan NV350 Transport', cls: RescueVehicleClass.PATIENT_TRANSPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 4.8156, lng: 7.0498 }, // Port Harcourt
-      { reg: 'AMB-006-LX', make: 'Peugeot Boxer Neonatal', cls: RescueVehicleClass.NEONATAL, status: ProviderOperationalStatus.AVAILABLE, lat: 6.5000, lng: 3.3500 }, // Yaba/Surulere
+      { reg: 'AMB-001-OGB', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1580, lng: 4.2620 }, // LTH Ogbomoso
+      { reg: 'AMB-002-OGB', make: 'Toyota HiAce BLS', cls: RescueVehicleClass.BASIC_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1350, lng: 4.2430 }, // Takie Square
+      { reg: 'AMB-003-OGB', make: 'Ford Transit ICU', cls: RescueVehicleClass.ICU_AMBULANCE, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1290, lng: 4.2480 }, // BUTH Ogbomoso
+      { reg: 'AMB-004-OGB', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1390, lng: 4.2510 }, // General Hospital
+      { reg: 'AMB-005-OGB', make: 'Nissan NV350 Transport', cls: RescueVehicleClass.PATIENT_TRANSPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1250, lng: 4.2380 }, // Sabo Market
+      { reg: 'AMB-006-OGB', make: 'Peugeot Boxer Neonatal', cls: RescueVehicleClass.NEONATAL, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1420, lng: 4.2490 }, // Caretaker Area
     ];
 
     const results = [];
@@ -869,45 +977,45 @@ export class MedxRescueService {
       }
     }
 
-    // Seed Sample Patient Emergency Incidents into the Dispatch Console Queue
+    // Seed Sample Patient Emergency Incidents in Ogbomoso, Oyo State
     const demoIncidents = [
       {
         publicReference: 'MRX-SOS-9921',
         chiefComplaint: 'Acute Chest Pain & Severe Difficulty Breathing',
-        landmark: 'Ikeja City Mall, Alausa, Ikeja',
+        landmark: 'Takie Square, Ogbomoso, Oyo State',
         callerName: 'Obaloluwa Ajayi',
         callerPhone: '+2348012345678',
         priority: IncidentPriority.CRITICAL,
         triageUrgency: 'IMMEDIATE',
         triageSuggestedUrgency: 'IMMEDIATE',
         intakeChannel: 'APP_SOS',
-        location: { type: 'Point', coordinates: [3.3515, 6.6018] },
+        location: { type: 'Point', coordinates: [4.2430, 8.1350] },
         status: IncidentStatus.DISPATCH_REVIEW,
       },
       {
         publicReference: 'MRX-SOS-3312',
         chiefComplaint: 'Road Traffic Collision & Uncontrolled Bleeding',
-        landmark: 'Ahmadu Bello Way, Victoria Island',
+        landmark: 'LAUTECH Main Gate, Ogbomoso, Oyo State',
         callerName: 'Emmanuel Obaloluwa',
         callerPhone: '+2348023456789',
         priority: IncidentPriority.CRITICAL,
         triageUrgency: 'IMMEDIATE',
         triageSuggestedUrgency: 'IMMEDIATE',
         intakeChannel: 'APP_SOS',
-        location: { type: 'Point', coordinates: [3.4246, 6.4549] },
+        location: { type: 'Point', coordinates: [4.2580, 8.1550] },
         status: IncidentStatus.REQUEST_RECEIVED,
       },
       {
         publicReference: 'MRX-SOS-4418',
         chiefComplaint: 'High Fever, Convulsions & Respiratory Distress',
-        landmark: 'Lekki Phase 1 Gate, Lekki',
+        landmark: 'Sabo Market Area, Ogbomoso, Oyo State',
         callerName: 'Grace Adenike',
         callerPhone: '+2348034567890',
         priority: IncidentPriority.URGENT,
         triageUrgency: 'URGENT',
         triageSuggestedUrgency: 'URGENT',
         intakeChannel: 'APP_SOS',
-        location: { type: 'Point', coordinates: [3.4750, 6.4350] },
+        location: { type: 'Point', coordinates: [4.2380, 8.1250] },
         status: IncidentStatus.DISPATCH_REVIEW,
       },
     ];
