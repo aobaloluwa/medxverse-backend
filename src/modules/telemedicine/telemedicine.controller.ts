@@ -457,8 +457,8 @@ export class TelemedicineController {
       const authReq = req as AuthenticatedRequest;
       const sessionId = String(req.params.id || '');
 
-      // Immediate 911 Emergency Calls Bypass (Bypasses JaaS token/payment/schedule checks)
-      if (sessionId.startsWith('emergency-911-') || sessionId.startsWith('emergency-sos-')) {
+      // Immediate Emergency Calls Bypass (Handles emergency-voice-, emergency-911-, emergency-sos-, etc.)
+      if (sessionId.startsWith('emergency-')) {
         const cleanRoom = sessionId.toLowerCase().replace(/[^a-z0-9-]/g, '');
         res.status(200).json({
           success: true,
@@ -466,7 +466,7 @@ export class TelemedicineController {
             domain: 'meet.jit.si',
             appId: 'public',
             roomName: `medxverse-${cleanRoom}`,
-            jwt: '',
+            jwt: 'public-emergency-jwt',
             meetingUrl: `https://meet.jit.si/medxverse-${cleanRoom}`,
             expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
           },
@@ -614,6 +614,21 @@ export class TelemedicineController {
   public async markCallStarted(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
+      const id = String(req.params.id || '');
+
+      // Immediate Emergency Calls Bypass
+      if (id.startsWith('emergency-')) {
+        res.status(200).json({
+          success: true,
+          data: {
+            _id: id,
+            activeCallId: (req.body as any)?.callId || `call-${Date.now()}`,
+            callStartedAt: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+
       const userType = authReq.user.userType;
       if (userType !== 'PATIENT' && userType !== 'STAFF') {
         res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can start this call.' });
@@ -621,7 +636,6 @@ export class TelemedicineController {
       }
 
       const hospitalId = String(authReq.user.hospitalId || '');
-      const id = String(req.params.id || '');
       const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
       const doctorId = await resolveStaffRecordId(authReq);
       if (userType === 'STAFF' && !doctorId) {
@@ -749,6 +763,14 @@ export class TelemedicineController {
   public async acceptCall(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
+      const sessionId = String(req.params.id || '');
+
+      // Emergency 911 Direct Call Bypass
+      if (sessionId.startsWith('emergency-')) {
+        res.status(200).json({ success: true, message: 'Emergency call accepted.' });
+        return;
+      }
+
       const userType = authReq.user.userType;
       if (userType !== 'PATIENT' && userType !== 'STAFF') {
         res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can answer this call.' });
@@ -756,7 +778,6 @@ export class TelemedicineController {
       }
 
       const hospitalId = String(authReq.user.hospitalId || '');
-      const sessionId = String(req.params.id || '');
       const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
       const doctorId = await resolveStaffRecordId(authReq);
       if (userType === 'STAFF' && !doctorId) {
@@ -819,6 +840,14 @@ export class TelemedicineController {
   public async recordCallSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
+      const sessionId = String(req.params.id || '');
+
+      // Emergency Call Summary Bypass
+      if (sessionId.startsWith('emergency-')) {
+        res.status(200).json({ success: true, message: 'Emergency call ended.' });
+        return;
+      }
+
       const userType = authReq.user.userType;
       if (userType !== 'PATIENT' && userType !== 'STAFF') {
         res.status(403).json({ success: false, message: 'Only the assigned patient or staff member can end this call.' });
@@ -826,7 +855,6 @@ export class TelemedicineController {
       }
 
       const hospitalId = String(authReq.user.hospitalId || '');
-      const sessionId = String(req.params.id || '');
       const patientId = userType === 'PATIENT' ? String(authReq.user._id) : undefined;
       const doctorId = await resolveStaffRecordId(authReq);
       if (userType === 'STAFF' && !doctorId) {
