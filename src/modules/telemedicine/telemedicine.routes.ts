@@ -17,6 +17,11 @@ router.get('/prescriptions/verify/:verificationId', (req, res, next) =>
   telemedicineController.verifyPrescription(req, res, next)
 );
 
+// Meeting tokens for emergency calls bypass middleware authentication
+router.get('/sessions/:id/meeting-token', (req, res, next) =>
+  telemedicineController.getMeetingToken(req, res, next)
+);
+
 router.use(authenticate, requireAcceptedStaffInvitation);
 
 // Telemedicine directory for the authenticated hospital
@@ -41,9 +46,6 @@ router.get('/sessions', (req, res, next) =>
 );
 router.get('/sessions/:id', (req, res, next) =>
   telemedicineController.getSessionById(req, res, next)
-);
-router.get('/sessions/:id/meeting-token', (req, res, next) =>
-  telemedicineController.getMeetingToken(req, res, next)
 );
 router.post('/sessions/:id/payment/initialize', (req, res, next) =>
   telemedicineController.initializePayment(req, res, next)
