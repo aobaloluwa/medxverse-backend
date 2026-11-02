@@ -466,7 +466,7 @@ export class TelemedicineController {
             domain: 'meet.jit.si',
             appId: 'public',
             roomName: `medxverse-${cleanRoom}`,
-            jwt: 'public-emergency-jwt',
+            jwt: '',
             meetingUrl: `https://meet.jit.si/medxverse-${cleanRoom}`,
             expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
           },
