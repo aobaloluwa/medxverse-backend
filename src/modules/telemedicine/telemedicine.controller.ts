@@ -455,6 +455,25 @@ export class TelemedicineController {
   public async getMeetingToken(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const authReq = req as AuthenticatedRequest;
+      const sessionId = String(req.params.id || '');
+
+      // Immediate 911 Emergency Calls Bypass (Bypasses JaaS token/payment/schedule checks)
+      if (sessionId.startsWith('emergency-911-') || sessionId.startsWith('emergency-sos-')) {
+        const cleanRoom = sessionId.toLowerCase().replace(/[^a-z0-9-]/g, '');
+        res.status(200).json({
+          success: true,
+          data: {
+            domain: 'meet.jit.si',
+            appId: 'public',
+            roomName: `medxverse-${cleanRoom}`,
+            jwt: '',
+            meetingUrl: `https://meet.jit.si/medxverse-${cleanRoom}`,
+            expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+          },
+        });
+        return;
+      }
+
       const configuredAppId = env.JAAS_APP_ID?.trim();
       const configuredApiKeyId = env.JAAS_API_KEY_ID?.trim();
       const privateKey = env.JAAS_PRIVATE_KEY;
@@ -483,7 +502,6 @@ export class TelemedicineController {
         return;
       }
 
-      const sessionId = String(req.params.id || '');
       const isPatient = authReq.user.userType === 'PATIENT';
       const staffRecordId = await resolveStaffRecordId(authReq);
 
