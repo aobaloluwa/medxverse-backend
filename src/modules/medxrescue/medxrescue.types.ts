@@ -103,3 +103,91 @@ export interface IRescueProviderMember extends Document {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export enum TriageTag { RED = 'RED', YELLOW = 'YELLOW', GREEN = 'GREEN', BLACK = 'BLACK' }
+
+export interface IPreShiftChecklist extends Document {
+  vehicleId: Types.ObjectId;
+  providerId: Types.ObjectId;
+  performedBy: Types.ObjectId;
+  checkedAt: Date;
+  fuelLevelPercent: number;
+  oxygenPressurePsi: number;
+  aedFunctional: boolean;
+  monitorFunctional: boolean;
+  airwayKitComplete: boolean;
+  ppeStocked: boolean;
+  stretcherFunctional: boolean;
+  essentialMedsStocked: boolean;
+  passed: boolean;
+  notes?: string;
+  createdAt: Date;
+}
+
+export interface IClinicalObservation extends Document {
+  incidentId: Types.ObjectId;
+  recordedBy: Types.ObjectId;
+  recordedAt: Date;
+  heartRateBpm?: number;
+  systolicBpMmHg?: number;
+  diastolicBpMmHg?: number;
+  spO2Percent?: number;
+  respiratoryRateBpm?: number;
+  temperatureCelsius?: number;
+  gcsScore?: number;
+  avpuScale?: 'ALERT' | 'VOICE' | 'PAIN' | 'UNRESPONSIVE';
+  ecgLeadResult?: string;
+  deviceProvenance?: string;
+  notes?: string;
+  createdAt: Date;
+}
+
+export interface IEclinicalPatientCareReport extends Document {
+  incidentId: Types.ObjectId;
+  vehicleId: Types.ObjectId;
+  clinicianId: Types.ObjectId;
+  chiefComplaint: string;
+  historyOfPresentIllness?: string;
+  abcdeAssessment?: {
+    airway?: string;
+    breathing?: string;
+    circulation?: string;
+    disability?: string;
+    exposure?: string;
+  };
+  sampleHistory?: {
+    signsSymptoms?: string;
+    allergies?: string;
+    medications?: string;
+    pastHistory?: string;
+    lastOralIntake?: string;
+    eventsPreceding?: string;
+  };
+  interventions?: {
+    time: Date;
+    intervention: string;
+    doseOrRoute?: string;
+    administeredBy?: string;
+    patientResponse?: string;
+  }[];
+  triageTag?: TriageTag;
+  receivingFacilityId?: Types.ObjectId;
+  receivingClinicianName?: string;
+  clinicianSignature?: string;
+  completedAt?: Date;
+  isSigned: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IHospitalTeamActivation extends Document {
+  incidentId: Types.ObjectId;
+  facilityId: Types.ObjectId;
+  activatedBy: Types.ObjectId;
+  teamType: 'RESUSCITATION' | 'CARDIAC' | 'STROKE' | 'TRAUMA' | 'OBSTETRIC' | 'PEDIATRIC' | 'THEATRE' | 'ICU';
+  notes?: string;
+  activatedAt: Date;
+  acknowledgedAt?: Date;
+  acknowledgedBy?: Types.ObjectId;
+}
+

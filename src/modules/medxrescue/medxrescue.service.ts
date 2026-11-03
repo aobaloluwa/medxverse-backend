@@ -5,6 +5,7 @@ import { StaffUser } from '../staff-auth/staff-user.model.js';
 import { publishMedxRescueEvent } from './medxrescue.events.js';
 import {
   RescueAuditModel, RescueDispatchOfferModel, RescueIncidentModel, RescueProviderModel, RescueVehicleModel, RescueFacilityModel, RescueFacilityAcceptanceModel, RescueClinicalHandoverModel, RescueProviderMemberModel,
+  RescuePreShiftChecklistModel, RescueClinicalObservationModel, RescueEPCRModel, RescueHospitalTeamActivationModel,
 } from './medxrescue.model.js';
 import {
   IncidentStatus, IncidentPriority, ProviderVerificationStatus, ProviderOperationalStatus,
@@ -1038,6 +1039,296 @@ export class MedxRescueService {
     publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(provider._id) });
     return { provider, vehicles: results, seededIncidentsCount: demoIncidents.length };
   }
+
+  // --- SRS Feature Extensions ---
+
+  async recordClinicalObservation(incidentId: string, recordedBy: string, input: Record<string, unknown>) {
+    if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(recordedBy)) {
+      throw Object.assign(new Error('Valid incident and clinician IDs are required.'), { statusCode: 400 });
+    }
+    const incident = await RescueIncidentModel.findById(incidentId).select('_id publicReference').exec();
+    if (!incident) throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+
+    const obs = await RescueClinicalObservationModel.create({
+      incidentId: incident._id,
+      recordedBy: new Types.ObjectId(recordedBy),
+      recordedAt: new Date(),
+      heartRateBpm: input.heartRateBpm !== undefined ? Number(input.heartRateBpm) : undefined,
+      systolicBpMmHg: input.systolicBpMmHg !== undefined ? Number(input.systolicBpMmHg) : undefined,
+      diastolicBpMmHg: input.diastolicBpMmHg !== undefined ? Number(input.diastolicBpMmHg) : undefined,
+      spO2Percent: input.spO2Percent !== undefined ? Number(input.spO2Percent) : undefined,
+      respiratoryRateBpm: input.respiratoryRateBpm !== undefined ? Number(input.respiratoryRateBpm) : undefined,
+      temperatureCelsius: input.temperatureCelsius !== undefined ? Number(input.temperatureCelsius) : undefined,
+      gcsScore: input.gcsScore !== undefined ? Number(input.gcsScore) : undefined,
+      avpuScale: typeof input.avpuScale === 'string' && ['ALERT', 'VOICE', 'PAIN', 'UNRESPONSIVE'].includes(input.avpuScale) ? input.avpuScale : undefined,
+      ecgLeadResult: typeof input.ecgLeadResult === 'string' ? input.ecgLeadResult.slice(0, 500) : undefined,
+      deviceProvenance: typeof input.deviceProvenance === 'string' ? input.deviceProvenance.slice(0, 200) : undefined,
+      notes: typeof input.notes === 'string' ? input.notes.slice(0, 1000) : undefined,
+    });
+
+    await audit({ incidentId: incident._id, actorType: 'CREW', actorId: recordedBy, action: 'CLINICAL_OBSERVATION_RECORDED' });
+    publishMedxRescueEvent({ type: 'clinical.observation_recorded' as any, incidentId: String(incident._id), incidentReference: incident.publicReference });
+    return obs;
+  }
+
+  async getClinicalObservations(incidentId: string) {
+    if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+    return RescueClinicalObservationModel.find({ incidentId }).sort({ recordedAt: -1 }).limit(100).lean().exec();
+  }
+
+  async createOrUpdateEPCR(incidentId: string, clinicianId: string, vehicleId: string, input: Record<string, unknown>) {
+    if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(clinicianId) || !Types.ObjectId.isValid(vehicleId)) {
+      throw Object.assign(new Error('Valid incident, clinician, and vehicle IDs are required.'), { statusCode: 400 });
+    }
+    const incident = await RescueIncidentModel.findById(incidentId).exec();
+    if (!incident) throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+
+    const existing = await RescueEPCRModel.findOne({ incidentId }).exec();
+    if (existing && existing.isSigned) {
+      throw Object.assign(new Error('This ePCR has already been signed and finalized.'), { statusCode: 409 });
+    }
+
+    const payload: Record<string, unknown> = {
+      incidentId: incident._id,
+      vehicleId: new Types.ObjectId(vehicleId),
+      clinicianId: new Types.ObjectId(clinicianId),
+      chiefComplaint: typeof input.chiefComplaint === 'string' ? input.chiefComplaint.trim().slice(0, 500) : incident.chiefComplaint,
+      historyOfPresentIllness: typeof input.historyOfPresentIllness === 'string' ? input.historyOfPresentIllness.trim().slice(0, 3000) : undefined,
+      abcdeAssessment: input.abcdeAssessment && typeof input.abcdeAssessment === 'object' ? input.abcdeAssessment : undefined,
+      sampleHistory: input.sampleHistory && typeof input.sampleHistory === 'object' ? input.sampleHistory : undefined,
+      interventions: Array.isArray(input.interventions) ? input.interventions.slice(0, 50) : undefined,
+      triageTag: typeof input.triageTag === 'string' && ['RED', 'YELLOW', 'GREEN', 'BLACK'].includes(input.triageTag) ? input.triageTag : undefined,
+      receivingFacilityId: input.receivingFacilityId && Types.ObjectId.isValid(String(input.receivingFacilityId)) ? new Types.ObjectId(String(input.receivingFacilityId)) : incident.destinationFacilityId,
+      receivingClinicianName: typeof input.receivingClinicianName === 'string' ? input.receivingClinicianName.trim().slice(0, 150) : undefined,
+      clinicianSignature: typeof input.clinicianSignature === 'string' ? input.clinicianSignature.slice(0, 500) : undefined,
+      isSigned: input.isSigned === true,
+      completedAt: input.isSigned === true ? new Date() : undefined,
+    };
+
+    const epcr = await RescueEPCRModel.findOneAndUpdate(
+      { incidentId: incident._id },
+      { $set: payload },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    ).exec();
+
+    await audit({ incidentId: incident._id, actorType: 'CREW', actorId: clinicianId, action: epcr.isSigned ? 'EPCR_FINALIZED_AND_SIGNED' : 'EPCR_UPDATED' });
+    publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status });
+    return epcr;
+  }
+
+  async getEPCR(incidentId: string) {
+    if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+    return RescueEPCRModel.findOne({ incidentId }).populate('receivingFacilityId', 'name address emergencyContactPhone').lean().exec();
+  }
+
+  async submitPreShiftChecklist(vehicleId: string, providerId: string, performedBy: string, input: Record<string, unknown>) {
+    if (!Types.ObjectId.isValid(vehicleId) || !Types.ObjectId.isValid(providerId) || !Types.ObjectId.isValid(performedBy)) {
+      throw Object.assign(new Error('Valid vehicle, provider, and staff IDs are required.'), { statusCode: 400 });
+    }
+    const fuelLevelPercent = Number(input.fuelLevelPercent);
+    const oxygenPressurePsi = Number(input.oxygenPressurePsi);
+    if (!Number.isFinite(fuelLevelPercent) || fuelLevelPercent < 0 || fuelLevelPercent > 100) {
+      throw Object.assign(new Error('Fuel level percentage must be between 0 and 100.'), { statusCode: 400 });
+    }
+    if (!Number.isFinite(oxygenPressurePsi) || oxygenPressurePsi < 0) {
+      throw Object.assign(new Error('Oxygen pressure must be a non-negative number.'), { statusCode: 400 });
+    }
+
+    const aedFunctional = input.aedFunctional !== false;
+    const monitorFunctional = input.monitorFunctional !== false;
+    const airwayKitComplete = input.airwayKitComplete !== false;
+    const ppeStocked = input.ppeStocked !== false;
+    const stretcherFunctional = input.stretcherFunctional !== false;
+    const essentialMedsStocked = input.essentialMedsStocked !== false;
+
+    const passed = fuelLevelPercent >= 25 && oxygenPressurePsi >= 500 && aedFunctional && monitorFunctional && airwayKitComplete && ppeStocked && stretcherFunctional && essentialMedsStocked;
+
+    const checklist = await RescuePreShiftChecklistModel.create({
+      vehicleId: new Types.ObjectId(vehicleId),
+      providerId: new Types.ObjectId(providerId),
+      performedBy: new Types.ObjectId(performedBy),
+      checkedAt: new Date(),
+      fuelLevelPercent,
+      oxygenPressurePsi,
+      aedFunctional,
+      monitorFunctional,
+      airwayKitComplete,
+      ppeStocked,
+      stretcherFunctional,
+      essentialMedsStocked,
+      passed,
+      notes: typeof input.notes === 'string' ? input.notes.slice(0, 1000) : undefined,
+    });
+
+    await audit({ actorType: 'CREW', actorId: performedBy, action: 'PRE_SHIFT_CHECKLIST_SUBMITTED', metadata: { vehicleId, passed } });
+    return checklist;
+  }
+
+  async getMatchingCandidates(incidentId: string) {
+    if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+    const incident = await RescueIncidentModel.findById(incidentId).lean().exec();
+    if (!incident) throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+
+    const vehicles = await this.listDispatchEligibleVehicles(incidentId);
+
+    const requiredClassPriorityMap: Record<string, string[]> = {
+      [IncidentPriority.CRITICAL]: [RescueVehicleClass.ADVANCED_LIFE_SUPPORT, RescueVehicleClass.ICU_AMBULANCE, RescueVehicleClass.NEONATAL],
+      [IncidentPriority.URGENT]: [RescueVehicleClass.ADVANCED_LIFE_SUPPORT, RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.ICU_AMBULANCE],
+      [IncidentPriority.ROUTINE]: [RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.PATIENT_TRANSPORT, RescueVehicleClass.ADVANCED_LIFE_SUPPORT],
+      [IncidentPriority.UNTRIAGED]: [RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.ADVANCED_LIFE_SUPPORT],
+    };
+
+    const preferredClasses = requiredClassPriorityMap[incident.priority] || [RescueVehicleClass.BASIC_LIFE_SUPPORT];
+
+    const rankedCandidates = vehicles.map((v: any) => {
+      let matchScore = 100;
+      const reasons: string[] = [];
+
+      if (v.distanceKm !== undefined) {
+        if (v.distanceKm <= 5) {
+          matchScore += 30;
+          reasons.push(`Close proximity (${v.distanceKm} km)`);
+        } else if (v.distanceKm <= 15) {
+          matchScore += 15;
+          reasons.push(`Moderate proximity (${v.distanceKm} km)`);
+        } else {
+          matchScore -= 20;
+          reasons.push(`Distant unit (${v.distanceKm} km)`);
+        }
+      }
+
+      if (preferredClasses.includes(v.vehicleClass)) {
+        matchScore += 25;
+        reasons.push(`Matched capability class (${v.vehicleClass.replace(/_/g, ' ')})`);
+      } else {
+        matchScore -= 15;
+        reasons.push(`Sub-optimal vehicle class for ${incident.priority} priority`);
+      }
+
+      if (v.gpsFreshness === 'FRESH') {
+        matchScore += 15;
+        reasons.push('Live telemetry GPS verified');
+      } else {
+        matchScore -= 30;
+        reasons.push('Telemetry delay');
+      }
+
+      return {
+        vehicle: v,
+        matchScore: Math.max(0, Math.min(100, matchScore)),
+        explainableReasons: reasons,
+        recommended: matchScore >= 60,
+      };
+    }).sort((a, b) => b.matchScore - a.matchScore);
+
+    return {
+      incidentId: String(incident._id),
+      priority: incident.priority,
+      candidates: rankedCandidates,
+    };
+  }
+
+  async activateHospitalTeam(incidentId: string, facilityId: string, activatedBy: string, teamType: string, notes?: string) {
+    if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(facilityId) || !Types.ObjectId.isValid(activatedBy)) {
+      throw Object.assign(new Error('Valid incident, facility, and activator IDs are required.'), { statusCode: 400 });
+    }
+    const validTeams = ['RESUSCITATION', 'CARDIAC', 'STROKE', 'TRAUMA', 'OBSTETRIC', 'PEDIATRIC', 'THEATRE', 'ICU'];
+    if (!validTeams.includes(teamType)) throw Object.assign(new Error('Select a valid emergency hospital team.'), { statusCode: 400 });
+
+    const activation = await RescueHospitalTeamActivationModel.create({
+      incidentId: new Types.ObjectId(incidentId),
+      facilityId: new Types.ObjectId(facilityId),
+      activatedBy: new Types.ObjectId(activatedBy),
+      teamType,
+      notes: notes?.slice(0, 1000),
+      activatedAt: new Date(),
+    });
+
+    await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId: activatedBy, action: 'HOSPITAL_TEAM_ACTIVATED', metadata: { facilityId, teamType } });
+    publishMedxRescueEvent({ type: 'facility.changed', incidentId, facilityId, reason: `Emergency team pre-activation: ${teamType}` });
+    return activation;
+  }
+
+  async getHospitalTeamActivations(incidentId: string) {
+    if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+    return RescueHospitalTeamActivationModel.find({ incidentId }).sort({ activatedAt: -1 }).lean().exec();
+  }
+
+  async getFHIRBundle(incidentId: string) {
+    if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+    const incident = await RescueIncidentModel.findById(incidentId)
+      .populate('providerId', 'displayName legalName contactPhone')
+      .populate('vehicleId', 'registrationNumber makeModel vehicleClass')
+      .populate('destinationFacilityId', 'name facilityType address emergencyContactPhone')
+      .lean()
+      .exec() as any;
+
+    if (!incident) throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+
+    const [epcr, observations] = await Promise.all([
+      RescueEPCRModel.findOne({ incidentId: incident._id }).lean().exec(),
+      RescueClinicalObservationModel.find({ incidentId: incident._id }).sort({ recordedAt: 1 }).lean().exec(),
+    ]);
+
+    const patientResource = {
+      resourceType: 'Patient',
+      id: `pat-${incident._id}`,
+      name: [{ text: incident.patientName || incident.callerName || 'Unknown Patient' }],
+      telecom: incident.callerPhone ? [{ system: 'phone', value: incident.callerPhone, use: 'mobile' }] : [],
+    };
+
+    const encounterResource = {
+      resourceType: 'Encounter',
+      id: `enc-${incident._id}`,
+      status: incident.status === 'HANDED_OVER' ? 'finished' : 'in-progress',
+      class: { system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: 'EMER', display: 'Emergency' },
+      subject: { reference: `Patient/pat-${incident._id}` },
+      period: { start: incident.createdAt, end: incident.handedOverAt || undefined },
+      reasonCode: [{ text: incident.chiefComplaint }],
+      serviceProvider: incident.destinationFacilityId ? { display: incident.destinationFacilityId.name } : undefined,
+    };
+
+    const observationResources = observations.map((obs: any, idx: number) => ({
+      resourceType: 'Observation',
+      id: `obs-${obs._id || idx}`,
+      status: 'final',
+      category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/observation-category', code: 'vital-signs', display: 'Vital Signs' }] }],
+      subject: { reference: `Patient/pat-${incident._id}` },
+      encounter: { reference: `Encounter/enc-${incident._id}` },
+      effectiveDateTime: obs.recordedAt,
+      component: [
+        obs.heartRateBpm ? { code: { text: 'Heart Rate' }, valueQuantity: { value: obs.heartRateBpm, unit: 'beats/min' } } : null,
+        obs.systolicBpMmHg ? { code: { text: 'Systolic Blood Pressure' }, valueQuantity: { value: obs.systolicBpMmHg, unit: 'mmHg' } } : null,
+        obs.spO2Percent ? { code: { text: 'Oxygen Saturation' }, valueQuantity: { value: obs.spO2Percent, unit: '%' } } : null,
+        obs.respiratoryRateBpm ? { code: { text: 'Respiratory Rate' }, valueQuantity: { value: obs.respiratoryRateBpm, unit: 'breaths/min' } } : null,
+      ].filter(Boolean),
+    }));
+
+    return {
+      resourceType: 'Bundle',
+      type: 'document',
+      timestamp: new Date().toISOString(),
+      entry: [
+        { resource: patientResource },
+        { resource: encounterResource },
+        ...observationResources.map((res: any) => ({ resource: res })),
+      ],
+    };
+  }
+
+  async createFamilyTrackingLink(reference: string, token: string) {
+    const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
+    if (!incident || !safeEqual(incident.guestTokenHash, sha256(token))) {
+      throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
+    }
+    const familyToken = crypto.createHmac('sha256', env.JWT_SECRET).update(`family:${reference}:${Date.now()}`).digest('base64url');
+    return {
+      reference: incident.publicReference,
+      familyToken,
+      expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000), // 4 hours validity
+    };
+  }
 }
 export const medxRescueService = new MedxRescueService();
+
 

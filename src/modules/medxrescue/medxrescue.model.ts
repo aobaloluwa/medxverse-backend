@@ -124,3 +124,90 @@ ProviderMemberSchema.index({ providerId: 1, userId: 1 }, { unique: true });
 ProviderMemberSchema.index({ userId: 1, active: 1 });
 
 export const RescueProviderMemberModel = mongoose.models.RescueProviderMember || model<IRescueProviderMember>('RescueProviderMember', ProviderMemberSchema);
+
+const PreShiftChecklistSchema = new Schema({
+  vehicleId: { type: Schema.Types.ObjectId, ref: 'RescueVehicle', required: true, index: true },
+  providerId: { type: Schema.Types.ObjectId, ref: 'RescueProvider', required: true, index: true },
+  performedBy: { type: Schema.Types.ObjectId, required: true },
+  checkedAt: { type: Date, default: Date.now },
+  fuelLevelPercent: { type: Number, required: true, min: 0, max: 100 },
+  oxygenPressurePsi: { type: Number, required: true, min: 0 },
+  aedFunctional: { type: Boolean, required: true },
+  monitorFunctional: { type: Boolean, required: true },
+  airwayKitComplete: { type: Boolean, required: true },
+  ppeStocked: { type: Boolean, required: true },
+  stretcherFunctional: { type: Boolean, required: true },
+  essentialMedsStocked: { type: Boolean, required: true },
+  passed: { type: Boolean, required: true },
+  notes: { type: String, maxlength: 1000 },
+}, { timestamps: true });
+
+const ClinicalObservationSchema = new Schema({
+  incidentId: { type: Schema.Types.ObjectId, ref: 'RescueIncident', required: true, index: true },
+  recordedBy: { type: Schema.Types.ObjectId, required: true },
+  recordedAt: { type: Date, default: Date.now },
+  heartRateBpm: { type: Number, min: 0, max: 300 },
+  systolicBpMmHg: { type: Number, min: 0, max: 300 },
+  diastolicBpMmHg: { type: Number, min: 0, max: 200 },
+  spO2Percent: { type: Number, min: 0, max: 100 },
+  respiratoryRateBpm: { type: Number, min: 0, max: 100 },
+  temperatureCelsius: { type: Number, min: 20, max: 45 },
+  gcsScore: { type: Number, min: 3, max: 15 },
+  avpuScale: { type: String, enum: ['ALERT', 'VOICE', 'PAIN', 'UNRESPONSIVE'] },
+  ecgLeadResult: { type: String, maxlength: 500 },
+  deviceProvenance: { type: String, maxlength: 200 },
+  notes: { type: String, maxlength: 1000 },
+}, { timestamps: true });
+
+const EPCRSchema = new Schema({
+  incidentId: { type: Schema.Types.ObjectId, ref: 'RescueIncident', required: true, unique: true },
+  vehicleId: { type: Schema.Types.ObjectId, ref: 'RescueVehicle', required: true },
+  clinicianId: { type: Schema.Types.ObjectId, required: true },
+  chiefComplaint: { type: String, required: true, maxlength: 500 },
+  historyOfPresentIllness: { type: String, maxlength: 3000 },
+  abcdeAssessment: {
+    airway: { type: String, maxlength: 500 },
+    breathing: { type: String, maxlength: 500 },
+    circulation: { type: String, maxlength: 500 },
+    disability: { type: String, maxlength: 500 },
+    exposure: { type: String, maxlength: 500 },
+  },
+  sampleHistory: {
+    signsSymptoms: { type: String, maxlength: 1000 },
+    allergies: { type: String, maxlength: 1000 },
+    medications: { type: String, maxlength: 1000 },
+    pastHistory: { type: String, maxlength: 1000 },
+    lastOralIntake: { type: String, maxlength: 500 },
+    eventsPreceding: { type: String, maxlength: 1000 },
+  },
+  interventions: [{
+    time: { type: Date, default: Date.now },
+    intervention: { type: String, required: true, maxlength: 300 },
+    doseOrRoute: { type: String, maxlength: 200 },
+    administeredBy: { type: String, maxlength: 150 },
+    patientResponse: { type: String, maxlength: 500 },
+  }],
+  triageTag: { type: String, enum: ['RED', 'YELLOW', 'GREEN', 'BLACK'] },
+  receivingFacilityId: { type: Schema.Types.ObjectId, ref: 'RescueFacility' },
+  receivingClinicianName: { type: String, maxlength: 150 },
+  clinicianSignature: { type: String, maxlength: 500 },
+  completedAt: Date,
+  isSigned: { type: Boolean, default: false },
+}, { timestamps: true });
+
+const HospitalTeamActivationSchema = new Schema({
+  incidentId: { type: Schema.Types.ObjectId, ref: 'RescueIncident', required: true, index: true },
+  facilityId: { type: Schema.Types.ObjectId, ref: 'RescueFacility', required: true, index: true },
+  activatedBy: { type: Schema.Types.ObjectId, required: true },
+  teamType: { type: String, enum: ['RESUSCITATION', 'CARDIAC', 'STROKE', 'TRAUMA', 'OBSTETRIC', 'PEDIATRIC', 'THEATRE', 'ICU'], required: true },
+  notes: { type: String, maxlength: 1000 },
+  activatedAt: { type: Date, default: Date.now },
+  acknowledgedAt: Date,
+  acknowledgedBy: Schema.Types.ObjectId,
+}, { timestamps: true });
+
+export const RescuePreShiftChecklistModel = mongoose.models.RescuePreShiftChecklist || model('RescuePreShiftChecklist', PreShiftChecklistSchema);
+export const RescueClinicalObservationModel = mongoose.models.RescueClinicalObservation || model('RescueClinicalObservation', ClinicalObservationSchema);
+export const RescueEPCRModel = mongoose.models.RescueEPCR || model('RescueEPCR', EPCRSchema);
+export const RescueHospitalTeamActivationModel = mongoose.models.RescueHospitalTeamActivation || model('RescueHospitalTeamActivation', HospitalTeamActivationSchema);
+

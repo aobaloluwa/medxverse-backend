@@ -343,6 +343,90 @@ export class MedxRescueController {
       res.json({ success: true, data: await medxRescueService.seedDemoFleet(), message: 'Demo operational fleet seeded successfully.' });
     } catch (error) { sendError(res, error); }
   }
+
+  // --- SRS Feature Extension Handlers ---
+
+  async recordClinicalObservation(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER', 'CLINICAL_LEAD'])) return;
+    try {
+      const data = await medxRescueService.recordClinicalObservation(String(req.params.id), actorId(req), req.body || {});
+      res.status(201).json({ success: true, data, message: 'Clinical vital observation recorded.' });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getClinicalObservations(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.getClinicalObservations(String(req.params.id)) });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async createOrUpdateEPCR(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'CLINICAL_LEAD'])) return;
+    try {
+      const vehicleId = String(req.body?.vehicleId || '');
+      const data = await medxRescueService.createOrUpdateEPCR(String(req.params.id), actorId(req), vehicleId, req.body || {});
+      res.json({ success: true, data, message: req.body?.isSigned ? 'ePCR finalized and signed.' : 'ePCR draft saved.' });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getEPCR(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.getEPCR(String(req.params.id)) });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async submitPreShiftChecklist(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC', 'DRIVER'])) return;
+    try {
+      const role = roleOf(req);
+      const providerId = ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN'].includes(role) ? String(req.body?.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
+      if (!providerId) { res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' }); return; }
+      const data = await medxRescueService.submitPreShiftChecklist(String(req.params.vehicleId), providerId, actorId(req), req.body || {});
+      res.status(201).json({ success: true, data, message: data.passed ? 'Pre-shift inspection passed.' : 'Pre-shift inspection failed. Resolve issues before marking vehicle available.' });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getMatchingCandidates(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.getMatchingCandidates(String(req.params.id)) });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async activateHospitalTeam(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD', 'RESCUE_PROVIDER_ADMIN', 'AMBULANCE_CREW', 'PARAMEDIC'])) return;
+    try {
+      const data = await medxRescueService.activateHospitalTeam(String(req.params.id), String(req.body?.facilityId || ''), actorId(req), String(req.body?.teamType || ''), typeof req.body?.notes === 'string' ? req.body.notes : undefined);
+      res.status(201).json({ success: true, data, message: `Emergency ${req.body?.teamType} team activated.` });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getHospitalTeamActivations(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.getHospitalTeamActivations(String(req.params.id)) });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getFHIRBundle(req: Request, res: Response): Promise<void> {
+    if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
+    try {
+      res.json({ success: true, data: await medxRescueService.getFHIRBundle(String(req.params.id)) });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async createFamilyTrackingLink(req: Request, res: Response): Promise<void> {
+    try {
+      const data = await medxRescueService.createFamilyTrackingLink(
+        String(req.params.reference),
+        String(req.header('X-Emergency-Access-Token') || ''),
+      );
+      res.json({ success: true, data });
+    } catch (error) { sendError(res, error); }
+  }
 }
 export const medxRescueController = new MedxRescueController();
+
 
