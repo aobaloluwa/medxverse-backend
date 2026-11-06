@@ -459,6 +459,87 @@ export class TelemedicineController {
             // Immediate Emergency Calls Bypass (Handles emergency-voice-, emergency-911-, emergency-sos-, etc.)
             if (sessionId.startsWith('emergency-')) {
                 const cleanRoom = sessionId.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                let callerName = 'Emergency Caller';
+                let callerEmail = undefined;
+                let callerId = `guest-${Date.now()}`;
+                const authHeader = req.headers.authorization;
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                    try {
+                        const token = authHeader.slice(7).trim();
+                        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+                        if (decoded) {
+                            const firstName = typeof decoded.firstName === 'string' ? decoded.firstName : '';
+                            const lastName = typeof decoded.lastName === 'string' ? decoded.lastName : '';
+                            const suppliedName = typeof decoded.name === 'string' ? decoded.name : '';
+                            const resolvedName = (suppliedName || `${firstName} ${lastName}`.trim()).trim();
+                            if (resolvedName)
+                                callerName = resolvedName;
+                            if (decoded.email)
+                                callerEmail = String(decoded.email);
+                            if (decoded._id || decoded.id)
+                                callerId = String(decoded._id || decoded.id);
+                        }
+                    }
+                    catch {
+                        // Unauthenticated guest SOS call - proceed with default caller details
+                    }
+                }
+                const configuredAppId = env.JAAS_APP_ID?.trim();
+                const configuredApiKeyId = env.JAAS_API_KEY_ID?.trim();
+                const privateKey = env.JAAS_PRIVATE_KEY;
+                if (configuredAppId && configuredApiKeyId && privateKey) {
+                    const appId = configuredAppId.split('/')[0];
+                    const kid = configuredApiKeyId.includes('/')
+                        ? configuredApiKeyId
+                        : `${appId}/${configuredApiKeyId}`;
+                    const now = Math.floor(Date.now() / 1000);
+                    const expiresIn = env.JAAS_TOKEN_TTL_SECONDS || 7200;
+                    const meetingRoomId = `medxverse-${cleanRoom}`;
+                    const roomName = `${appId}/${meetingRoomId}`;
+                    const tokenPayload = {
+                        aud: 'jitsi',
+                        iss: 'chat',
+                        sub: appId,
+                        room: meetingRoomId,
+                        nbf: now - 10,
+                        exp: now + expiresIn,
+                        context: {
+                            user: {
+                                id: callerId,
+                                name: callerName,
+                                ...(callerEmail ? { email: callerEmail } : {}),
+                                moderator: true,
+                            },
+                            features: {
+                                livestreaming: false,
+                                recording: false,
+                                transcription: false,
+                                'outbound-call': false,
+                            },
+                        },
+                    };
+                    const signingOptions = {
+                        algorithm: 'RS256',
+                        header: {
+                            alg: 'RS256',
+                            kid,
+                            typ: 'JWT',
+                        },
+                    };
+                    const token = jwt.sign(tokenPayload, privateKey, signingOptions);
+                    res.status(200).json({
+                        success: true,
+                        data: {
+                            domain: '8x8.vc',
+                            appId,
+                            roomName,
+                            jwt: token,
+                            meetingUrl: `https://8x8.vc/${roomName}`,
+                            expiresAt: new Date((now + expiresIn) * 1000).toISOString(),
+                        },
+                    });
+                    return;
+                }
                 res.status(200).json({
                     success: true,
                     data: {
