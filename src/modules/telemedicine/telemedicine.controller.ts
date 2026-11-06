@@ -209,14 +209,10 @@ export class TelemedicineController {
 
       const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
-      const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : req.query.patientId as string | undefined;
+      const isPatient = authReq.user.userType === 'PATIENT';
+      const patientId = isPatient ? authReq.user._id : (req.query.patientId as string | undefined);
       const staffRecordId = await resolveStaffRecordId(authReq);
-      if (authReq.user.userType === 'STAFF' && !staffRecordId) {
-        res.status(403).json({ success: false, message: 'Your staff login is not linked to a staff profile. Ask your hospital administrator to link it.' });
-        return;
-      }
-      // Never trust a staff client's doctorId query parameter; scope to its linked Staff record.
-      const doctorId = authReq.user.userType === 'STAFF' ? staffRecordId : req.query.doctorId as string | undefined;
+      const doctorId = isPatient ? undefined : (staffRecordId || (req.query.doctorId as string | undefined));
       const status = req.query.status as ConsultationStatus | undefined;
       const consultationType = req.query.consultationType as ConsultationType | undefined;
 
@@ -232,7 +228,6 @@ export class TelemedicineController {
       // Append active emergency calls for target recipient
       const now = Date.now();
       const emergencySessions: any[] = [];
-      const isPatient = authReq.user.userType === 'PATIENT';
 
       for (const [id, activeCall] of activeEmergencyCalls.entries()) {
         // Expire calls older than 5 minutes if not ended
