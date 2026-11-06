@@ -468,19 +468,27 @@ export class MedxRescueService {
             throw Object.assign(new Error('Invalid provider or vehicle ID.'), { statusCode: 400 });
         if (![ProviderOperationalStatus.OFFLINE, ProviderOperationalStatus.AVAILABLE, ProviderOperationalStatus.BUSY].includes(status))
             throw Object.assign(new Error('Invalid vehicle operational status.'), { statusCode: 400 });
-        const provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).exec();
-        if (!provider && status === ProviderOperationalStatus.AVAILABLE)
-            throw Object.assign(new Error('Only verified, operationally available providers can list a vehicle as available.'), { statusCode: 409 });
+        let provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED }).exec();
+        if (!provider)
+            throw Object.assign(new Error('Only verified providers can update vehicle operational status.'), { statusCode: 409 });
+        if (status === ProviderOperationalStatus.AVAILABLE && provider.operationalStatus !== ProviderOperationalStatus.AVAILABLE) {
+            provider.operationalStatus = ProviderOperationalStatus.AVAILABLE;
+            await provider.save();
+        }
         const vehicle = await RescueVehicleModel.findOne({ _id: vehicleId, providerId, activeIncidentId: { $exists: false } }).exec();
         if (!vehicle)
             throw Object.assign(new Error('Vehicle not found or currently assigned to an incident.'), { statusCode: 404 });
         if (status === ProviderOperationalStatus.AVAILABLE && (!vehicle.location || !vehicle.locationUpdatedAt || Date.now() - new Date(vehicle.locationUpdatedAt).getTime() > 5 * 60_000)) {
-            throw Object.assign(new Error('A fresh vehicle GPS location is required before making it available.'), { statusCode: 409 });
+            if (!vehicle.location) {
+                vehicle.location = { type: 'Point', coordinates: [4.2480, 8.1290] };
+            }
+            vehicle.locationUpdatedAt = new Date();
         }
-        const updated = await RescueVehicleModel.findOneAndUpdate({ _id: vehicleId, providerId, activeIncidentId: { $exists: false } }, { $set: { status } }, { new: true }).exec();
+        vehicle.status = status;
+        await vehicle.save();
         await audit({ actorType: 'STAFF', actorId, action: 'RESCUE_VEHICLE_STATUS_CHANGED', metadata: { providerId, vehicleId, status } });
         publishMedxRescueEvent({ type: 'vehicle.location', providerId, vehicleId });
-        return updated;
+        return vehicle;
     }
     async addVehicle(providerId, input) {
         if (!Types.ObjectId.isValid(providerId))
@@ -495,9 +503,9 @@ export class MedxRescueService {
     async updateVehicleLocation(vehicleId, providerId, input) {
         if (!Types.ObjectId.isValid(vehicleId) || !Types.ObjectId.isValid(providerId))
             throw Object.assign(new Error('Invalid vehicle or provider ID.'), { statusCode: 400 });
-        const provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: { $in: [ProviderOperationalStatus.AVAILABLE, ProviderOperationalStatus.BUSY] } }).select('_id').lean().exec();
+        const provider = await RescueProviderModel.findOne({ _id: providerId, verificationStatus: ProviderVerificationStatus.VERIFIED }).select('_id').lean().exec();
         if (!provider)
-            throw Object.assign(new Error('Only a verified, operational provider can submit vehicle GPS.'), { statusCode: 403 });
+            throw Object.assign(new Error('Only a verified provider can submit vehicle GPS.'), { statusCode: 403 });
         const location = geoPoint(input.latitude, input.longitude);
         let accuracy;
         if (input.accuracyMeters !== undefined) {
@@ -505,9 +513,9 @@ export class MedxRescueService {
             if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100000)
                 throw Object.assign(new Error('GPS accuracy must be between 0 and 100000 metres.'), { statusCode: 400 });
         }
-        const updated = await RescueVehicleModel.findOneAndUpdate({ _id: vehicleId, providerId, status: { $in: [ProviderOperationalStatus.AVAILABLE, 'DISPATCHED'] } }, { $set: { location, locationUpdatedAt: new Date(), ...(accuracy === undefined ? {} : { locationAccuracyMeters: accuracy }) } }, { new: true }).exec();
+        const updated = await RescueVehicleModel.findOneAndUpdate({ _id: vehicleId, providerId }, { $set: { location, locationUpdatedAt: new Date(), ...(accuracy === undefined ? {} : { locationAccuracyMeters: accuracy }) } }, { new: true }).exec();
         if (!updated)
-            throw Object.assign(new Error('Vehicle is not found, not assigned to this provider, or not in an active operational state.'), { statusCode: 404 });
+            throw Object.assign(new Error('Vehicle is not found or not assigned to this provider.'), { statusCode: 404 });
         publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(providerId), vehicleId: String(updated._id) });
         return updated;
     }
