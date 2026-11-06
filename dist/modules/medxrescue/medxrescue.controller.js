@@ -5,7 +5,8 @@ import { routingProvider } from './medxrescue.routing.js';
 const sendError = (res, error) => {
     const err = error;
     const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
-    res.status(status).json({ success: false, message: status >= 500 ? 'MedxRescue request could not be completed.' : err.message || 'Request failed.' });
+    console.error('[MedxRescue Controller Error]', error);
+    res.status(status).json({ success: false, message: err.message || 'MedxRescue request could not be completed.' });
 };
 const actorId = (req) => {
     const auth = req;

@@ -1424,13 +1424,15 @@ export class MedxRescueService {
             status: 'ACTIVE',
             isActive: true,
         });
+        const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const hospitalName = String(hospital.name || 'Hospital');
         let provider = (await RescueProviderModel.findOne({
-            legalName: { $regex: hospital.name, $options: 'i' },
+            legalName: { $regex: escapeRegex(hospitalName), $options: 'i' },
         }).exec());
         if (!provider) {
             provider = await RescueProviderModel.create({
-                legalName: `${hospital.name} Emergency Response Services`,
-                displayName: `${hospital.name} Fleet Alpha`,
+                legalName: `${hospitalName} Emergency Response Services`,
+                displayName: `${hospitalName} Fleet Alpha`,
                 contactName: name,
                 contactPhone: phone,
                 contactEmail: email,
