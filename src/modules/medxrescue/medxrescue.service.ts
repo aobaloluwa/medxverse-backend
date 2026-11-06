@@ -1,7 +1,10 @@
 import crypto from 'crypto';
 import mongoose, { Types } from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
 import { StaffUser } from '../staff-auth/staff-user.model.js';
+import { Staff } from '../staff/staff.model.js';
 import { publishMedxRescueEvent } from './medxrescue.events.js';
 import {
   RescueAuditModel, RescueDispatchOfferModel, RescueIncidentModel, RescueProviderModel, RescueVehicleModel, RescueFacilityModel, RescueFacilityAcceptanceModel, RescueClinicalHandoverModel, RescueProviderMemberModel,
@@ -1382,6 +1385,200 @@ export class MedxRescueService {
       reference: incident.publicReference,
       familyToken,
       expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000), // 4 hours validity
+    };
+  }
+
+  async listHospitals() {
+    const Account = mongoose.models.Account || mongoose.model('Account');
+    const hospitals = await Account.find({ accountType: 'HOSPITAL', isActive: true })
+      .select('_id name code phone address email logoUrl')
+      .sort({ name: 1 })
+      .lean()
+      .exec();
+    return hospitals;
+  }
+
+  async registerCrew(input: Record<string, unknown>) {
+    const name = requireText(input.name, 'Full name', 120);
+    const email = requireText(input.email, 'Email address', 200).toLowerCase().trim();
+    const password = requireText(input.password, 'Password', 100);
+    const phone = typeof input.phone === 'string' && input.phone.trim() ? input.phone.trim() : '+2348000000000';
+    const hospitalId = requireText(input.hospitalId, 'Host hospital', 100);
+    const crewRole = String(input.crewRole || 'PARAMEDIC').toUpperCase();
+    const regNumber = typeof input.registrationNumber === 'string' && input.registrationNumber.trim()
+      ? input.registrationNumber.trim().toUpperCase()
+      : `AMB-${Math.floor(100 + Math.random() * 900)}-RES`;
+    const makeModel = typeof input.makeModel === 'string' && input.makeModel.trim()
+      ? input.makeModel.trim()
+      : 'Mercedes Sprinter ALS Ambulance';
+    const vehicleClass = (input.vehicleClass as RescueVehicleClass) || RescueVehicleClass.ADVANCED_LIFE_SUPPORT;
+
+    if (!Types.ObjectId.isValid(hospitalId)) {
+      throw Object.assign(new Error('Selected hospital ID is invalid.'), { statusCode: 400 });
+    }
+
+    const Account = mongoose.models.Account || mongoose.model('Account');
+    const hospital = await Account.findOne({ _id: hospitalId, accountType: 'HOSPITAL', isActive: true }).lean().exec();
+    if (!hospital) {
+      throw Object.assign(new Error('Hospital not found or inactive.'), { statusCode: 404 });
+    }
+
+    const existingUser = await StaffUser.findOne({ email }).lean().exec();
+    if (existingUser) {
+      throw Object.assign(new Error('An account with this email address already exists. Please sign in.'), { statusCode: 409 });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const nameParts = name.split(' ');
+    const firstName = nameParts[0] || 'Paramedic';
+    const lastName = nameParts.slice(1).join(' ') || 'Crew';
+    const staffRecord = await Staff.create({
+      hospitalId: new Types.ObjectId(hospitalId),
+      firstName,
+      lastName,
+      role: crewRole,
+      title: 'Paramedic',
+      department: 'Emergency & Rescue',
+      contact: { phone, email },
+      isActive: true,
+      status: 'ACTIVE',
+    });
+
+    const staffUser = await StaffUser.create({
+      hospitalId: new Types.ObjectId(hospitalId),
+      staffId: staffRecord._id,
+      email,
+      password: passwordHash,
+      role: crewRole,
+      status: 'ACTIVE',
+      isActive: true,
+    });
+
+    let provider = (await RescueProviderModel.findOne({
+      legalName: { $regex: (hospital as any).name, $options: 'i' },
+    }).exec()) as any;
+
+    if (!provider) {
+      provider = await RescueProviderModel.create({
+        legalName: `${(hospital as any).name} Emergency Response Services`,
+        displayName: `${(hospital as any).name} Fleet Alpha`,
+        contactName: name,
+        contactPhone: phone,
+        contactEmail: email,
+        operatingAreas: [(hospital as any).address || 'Emergency Service Area'],
+        verificationStatus: ProviderVerificationStatus.VERIFIED,
+        operationalStatus: ProviderOperationalStatus.AVAILABLE,
+      });
+    }
+
+    await RescueProviderMemberModel.findOneAndUpdate(
+      { providerId: provider._id, userId: staffUser._id },
+      { $set: { memberRole: 'CREW', active: true } },
+      { upsert: true, new: true },
+    ).exec();
+
+    let vehicle = await RescueVehicleModel.findOne({ registrationNumber: regNumber }).exec();
+    if (!vehicle) {
+      vehicle = await RescueVehicleModel.create({
+        providerId: provider._id,
+        registrationNumber: regNumber,
+        makeModel,
+        vehicleClass,
+        equipment: ['Defibrillator', 'Ventilator', 'Oxygen Cylinder', 'ECG Monitor', 'Emergency Trauma Kit'],
+        crewQualifications: ['Paramedic', 'Emergency Medical Technician', 'ACLS Certified'],
+        status: ProviderOperationalStatus.AVAILABLE,
+        location: { type: 'Point', coordinates: [4.2480, 8.1290] },
+        locationUpdatedAt: new Date(),
+        locationAccuracyMeters: 5,
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        _id: String(staffUser._id),
+        hospitalId: String(hospitalId),
+        userType: 'STAFF',
+        role: crewRole,
+        name,
+        email,
+      },
+      process.env.JWT_SECRET || 'fallback_secret_key',
+      { expiresIn: '7d' },
+    );
+
+    return {
+      token,
+      user: {
+        _id: String(staffUser._id),
+        name,
+        email,
+        role: crewRole,
+        hospitalId: String(hospitalId),
+        hospitalName: (hospital as any).name,
+        userType: 'STAFF',
+      },
+      provider: {
+        _id: String(provider._id),
+        displayName: provider.displayName,
+        verificationStatus: provider.verificationStatus,
+      },
+      vehicle: {
+        _id: String(vehicle._id),
+        registrationNumber: vehicle.registrationNumber,
+        makeModel: vehicle.makeModel,
+        vehicleClass: vehicle.vehicleClass,
+        status: vehicle.status,
+      },
+    };
+  }
+
+  async loginCrew(input: Record<string, unknown>) {
+    const email = requireText(input.email, 'Email address', 200).toLowerCase().trim();
+    const password = requireText(input.password, 'Password', 100);
+
+    const staffUser = await StaffUser.findOne({ email }).select('+password').exec();
+    if (!staffUser || !staffUser.password) {
+      throw Object.assign(new Error('Invalid email address or password.'), { statusCode: 401 });
+    }
+
+    const isMatch = await bcrypt.compare(password, staffUser.password);
+    if (!isMatch) {
+      throw Object.assign(new Error('Invalid email address or password.'), { statusCode: 401 });
+    }
+
+    const staffRecord = await Staff.findById(staffUser.staffId).select('firstName lastName role').lean().exec();
+    const name = staffRecord ? `${(staffRecord as any).firstName || ''} ${(staffRecord as any).lastName || ''}`.trim() : 'Paramedic Crew';
+
+    const providerId = await this.resolveProviderIdForUser(String(staffUser._id));
+    const provider = providerId ? await RescueProviderModel.findById(providerId).lean().exec() : null;
+    const vehicle = providerId ? await RescueVehicleModel.findOne({ providerId }).lean().exec() : null;
+
+    const token = jwt.sign(
+      {
+        _id: String(staffUser._id),
+        hospitalId: String(staffUser.hospitalId),
+        userType: 'STAFF',
+        role: staffUser.role || 'PARAMEDIC',
+        name,
+        email,
+      },
+      process.env.JWT_SECRET || 'fallback_secret_key',
+      { expiresIn: '7d' },
+    );
+
+    return {
+      token,
+      user: {
+        _id: String(staffUser._id),
+        name,
+        email,
+        role: staffUser.role,
+        hospitalId: String(staffUser.hospitalId),
+        userType: 'STAFF',
+      },
+      provider: provider ? { _id: String((provider as any)._id), displayName: (provider as any).displayName } : null,
+      vehicle: vehicle ? { _id: String((vehicle as any)._id), registrationNumber: (vehicle as any).registrationNumber, makeModel: (vehicle as any).makeModel } : null,
     };
   }
 }

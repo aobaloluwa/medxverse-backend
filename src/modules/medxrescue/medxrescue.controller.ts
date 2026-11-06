@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../../middlewares/auth.middleware.js';
 import { medxRescueService } from './medxrescue.service.js';
+import { RescueProviderModel, RescueVehicleModel } from './medxrescue.model.js';
 import { IncidentStatus, IncidentPriority, ProviderVerificationStatus, ProviderOperationalStatus } from './medxrescue.types.js';
 import { routingProvider } from './medxrescue.routing.js';
 
@@ -424,6 +425,44 @@ export class MedxRescueController {
         String(req.header('X-Emergency-Access-Token') || ''),
       );
       res.json({ success: true, data });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async listHospitals(req: Request, res: Response): Promise<void> {
+    try {
+      res.json({ success: true, data: await medxRescueService.listHospitals() });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async registerCrew(req: Request, res: Response): Promise<void> {
+    try {
+      const data = await medxRescueService.registerCrew(req.body || {});
+      res.status(201).json({ success: true, data, message: 'Ambulance crew account registered successfully.' });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async loginCrew(req: Request, res: Response): Promise<void> {
+    try {
+      const data = await medxRescueService.loginCrew(req.body || {});
+      res.json({ success: true, data, message: 'Signed in successfully.' });
+    } catch (error) { sendError(res, error); }
+  }
+
+  async getCrewProfile(req: Request, res: Response): Promise<void> {
+    try {
+      const authReq = req as AuthRequest;
+      const userId = String(authReq.user?._id || authReq.user?.accountId || authReq.account?.accountId || '');
+      const providerId = await medxRescueService.resolveProviderIdForUser(userId);
+      const provider = providerId ? await RescueProviderModel.findById(providerId).lean().exec() : null;
+      const vehicle = providerId ? await RescueVehicleModel.findOne({ providerId }).lean().exec() : null;
+      res.json({
+        success: true,
+        data: {
+          user: authReq.user,
+          provider,
+          vehicle,
+        },
+      });
     } catch (error) { sendError(res, error); }
   }
 }

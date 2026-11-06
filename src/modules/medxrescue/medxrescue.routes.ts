@@ -11,11 +11,15 @@ router.get('/incidents/public/:reference', apiLimiter, (req, res) => void medxRe
 router.patch('/incidents/public/:reference/location', apiLimiter, (req, res) => void medxRescueController.updateGuestLocation(req, res));
 router.post('/incidents/public/:reference/cancel', apiLimiter, (req, res) => void medxRescueController.cancelGuestIncident(req, res));
 router.post('/incidents/public/:reference/family-link', apiLimiter, (req, res) => void medxRescueController.createFamilyTrackingLink(req, res));
-// Provider applications are public, but applications are never operationally eligible until verified.
+// Provider applications & crew auth are public
 router.post('/providers/apply', apiLimiter, (req, res) => void medxRescueController.submitProvider(req, res));
+router.get('/auth/hospitals', apiLimiter, (req, res) => void medxRescueController.listHospitals(req, res));
+router.post('/auth/register', apiLimiter, (req, res) => void medxRescueController.registerCrew(req, res));
+router.post('/auth/login', apiLimiter, (req, res) => void medxRescueController.loginCrew(req, res));
 
 // All operational/clinical actions require authenticated, role-checked staff.
 router.use(authenticate);
+router.get('/auth/me', (req, res) => void medxRescueController.getCrewProfile(req, res));
 router.get('/incidents', (req, res) => void medxRescueController.listIncidents(req, res));
 router.get('/incidents/:id', (req, res) => void medxRescueController.getIncidentById(req, res));
 router.get('/routing/estimate', (req, res) => void medxRescueController.getRouteEstimate(req, res));
