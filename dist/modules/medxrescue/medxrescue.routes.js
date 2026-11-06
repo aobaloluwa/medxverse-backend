@@ -8,6 +8,7 @@ router.post('/incidents', apiLimiter, (req, res) => void medxRescueController.cr
 router.get('/incidents/public/:reference', apiLimiter, (req, res) => void medxRescueController.getGuestIncident(req, res));
 router.patch('/incidents/public/:reference/location', apiLimiter, (req, res) => void medxRescueController.updateGuestLocation(req, res));
 router.post('/incidents/public/:reference/cancel', apiLimiter, (req, res) => void medxRescueController.cancelGuestIncident(req, res));
+router.post('/incidents/public/:reference/family-link', apiLimiter, (req, res) => void medxRescueController.createFamilyTrackingLink(req, res));
 // Provider applications are public, but applications are never operationally eligible until verified.
 router.post('/providers/apply', apiLimiter, (req, res) => void medxRescueController.submitProvider(req, res));
 // All operational/clinical actions require authenticated, role-checked staff.
@@ -19,6 +20,16 @@ router.patch('/incidents/:id/status', (req, res) => void medxRescueController.up
 router.patch('/incidents/:id/priority', (req, res) => void medxRescueController.updateIncidentPriority(req, res));
 router.post('/incidents/:id/escalations', (req, res) => void medxRescueController.recordEmergencyEscalation(req, res));
 router.patch('/incidents/:id/assignment-confirmation', (req, res) => void medxRescueController.confirmAcceptedAssignment(req, res));
+// Clinical Observations & ePCR
+router.post('/incidents/:id/observations', (req, res) => void medxRescueController.recordClinicalObservation(req, res));
+router.get('/incidents/:id/observations', (req, res) => void medxRescueController.getClinicalObservations(req, res));
+router.post('/incidents/:id/epcr', (req, res) => void medxRescueController.createOrUpdateEPCR(req, res));
+router.get('/incidents/:id/epcr', (req, res) => void medxRescueController.getEPCR(req, res));
+router.get('/incidents/:id/fhir', (req, res) => void medxRescueController.getFHIRBundle(req, res));
+// Matching Engine & Hospital Team Activations
+router.get('/incidents/:id/matching-candidates', (req, res) => void medxRescueController.getMatchingCandidates(req, res));
+router.post('/incidents/:id/team-activations', (req, res) => void medxRescueController.activateHospitalTeam(req, res));
+router.get('/incidents/:id/team-activations', (req, res) => void medxRescueController.getHospitalTeamActivations(req, res));
 router.get('/providers', (req, res) => void medxRescueController.listProviders(req, res));
 router.get('/providers/review-queue', (req, res) => void medxRescueController.listProvidersForReview(req, res));
 router.patch('/providers/:providerId/review', (req, res) => void medxRescueController.reviewProvider(req, res));
@@ -28,6 +39,7 @@ router.post('/providers/:providerId/vehicles', (req, res) => void medxRescueCont
 router.get('/providers/:providerId/vehicles', (req, res) => void medxRescueController.listVehicles(req, res));
 router.patch('/vehicles/:vehicleId/location', (req, res) => void medxRescueController.updateVehicleLocation(req, res));
 router.patch('/vehicles/:vehicleId/operational-status', (req, res) => void medxRescueController.setVehicleOperationalStatus(req, res));
+router.post('/vehicles/:vehicleId/pre-shift-checklist', (req, res) => void medxRescueController.submitPreShiftChecklist(req, res));
 router.get('/dispatch/eligible-vehicles', (req, res) => void medxRescueController.listDispatchEligibleVehicles(req, res));
 router.post('/incidents/:id/dispatch-offers', (req, res) => void medxRescueController.createDispatchOffer(req, res));
 router.post('/incidents/:id/facility-acceptance-requests', (req, res) => void medxRescueController.requestFacilityAcceptance(req, res));
@@ -39,4 +51,6 @@ router.get('/facilities/:facilityId/acceptances', (req, res) => void medxRescueC
 router.patch('/facilities/:facilityId/acceptances/:acceptanceId/respond', (req, res) => void medxRescueController.respondToFacilityAcceptance(req, res));
 router.get('/dispatch-offers', (req, res) => void medxRescueController.listOffers(req, res));
 router.post('/dispatch-offers/:offerId/respond', (req, res) => void medxRescueController.respondToOffer(req, res));
+router.get('/fleet/live', (req, res) => void medxRescueController.listLiveFleet(req, res));
+router.post('/fleet/seed-demo', (req, res) => void medxRescueController.seedDemoFleet(req, res));
 export default router;

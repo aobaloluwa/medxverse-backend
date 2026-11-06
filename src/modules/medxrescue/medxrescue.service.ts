@@ -1166,7 +1166,7 @@ export class MedxRescueService {
 
   async getMatchingCandidates(incidentId: string) {
     if (!Types.ObjectId.isValid(incidentId)) throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
-    const incident = await RescueIncidentModel.findById(incidentId).lean().exec();
+    const incident = (await RescueIncidentModel.findById(incidentId).lean().exec()) as any;
     if (!incident) throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
 
     const vehicles = await this.listDispatchEligibleVehicles(incidentId);

@@ -3,7 +3,7 @@ import mongoose, { Types } from 'mongoose';
 import { env } from '../../config/env.js';
 import { StaffUser } from '../staff-auth/staff-user.model.js';
 import { publishMedxRescueEvent } from './medxrescue.events.js';
-import { RescueAuditModel, RescueDispatchOfferModel, RescueIncidentModel, RescueProviderModel, RescueVehicleModel, RescueFacilityModel, RescueFacilityAcceptanceModel, RescueClinicalHandoverModel, RescueProviderMemberModel, } from './medxrescue.model.js';
+import { RescueAuditModel, RescueDispatchOfferModel, RescueIncidentModel, RescueProviderModel, RescueVehicleModel, RescueFacilityModel, RescueFacilityAcceptanceModel, RescueClinicalHandoverModel, RescueProviderMemberModel, RescuePreShiftChecklistModel, RescueClinicalObservationModel, RescueEPCRModel, RescueHospitalTeamActivationModel, } from './medxrescue.model.js';
 import { IncidentStatus, IncidentPriority, ProviderVerificationStatus, ProviderOperationalStatus, RescueVehicleClass, DispatchOfferStatus, FacilityAcceptanceStatus, } from './medxrescue.types.js';
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const makeReference = () => `MRX-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -176,6 +176,8 @@ export class MedxRescueService {
         return incident;
     }
     async getGuestIncident(reference, token) {
+        await this.expireStaleIncidents();
+        await this.expirePendingOffers();
         const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
         if (!incident || !safeEqual(incident.guestTokenHash, sha256(token)))
             throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
@@ -202,6 +204,8 @@ export class MedxRescueService {
         return result;
     }
     async listIncidents(query, hospitalAccountId) {
+        await this.expireStaleIncidents();
+        await this.expirePendingOffers();
         const page = Math.max(1, Number(query.page) || 1);
         const limit = Math.min(100, Math.max(1, Number(query.limit) || 30));
         const filter = {};
@@ -211,7 +215,13 @@ export class MedxRescueService {
             if (!Types.ObjectId.isValid(hospitalAccountId))
                 throw Object.assign(new Error('Hospital account context is missing.'), { statusCode: 403 });
             const facilities = await RescueFacilityModel.find({ ownerAccountId: new Types.ObjectId(hospitalAccountId) }).select('_id').lean().exec();
-            filter.destinationFacilityId = { $in: facilities.map((facility) => facility._id) };
+            const facilityIds = facilities.map((facility) => facility._id);
+            // Include unassigned incoming emergency SOS requests AND requests assigned to this hospital
+            filter.$or = [
+                { destinationFacilityId: { $in: facilityIds } },
+                { destinationFacilityId: { $exists: false } },
+                { destinationFacilityId: null },
+            ];
         }
         const [incidents, total] = await Promise.all([
             RescueIncidentModel.aggregate([
@@ -246,6 +256,51 @@ export class MedxRescueService {
             processed += 1;
         }
         return processed;
+    }
+    async expireStaleIncidents() {
+        const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+        const staleIncidents = await RescueIncidentModel.find({
+            status: { $in: [
+                    IncidentStatus.REQUEST_RECEIVED,
+                    IncidentStatus.DISPATCH_REVIEW,
+                    IncidentStatus.OFFERED_TO_CREW,
+                    IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION,
+                ] },
+            createdAt: { $lte: twentyMinutesAgo },
+        }).select('_id publicReference status vehicleId').limit(100).exec();
+        let count = 0;
+        const now = new Date();
+        for (const incident of staleIncidents) {
+            const updated = await RescueIncidentModel.findOneAndUpdate({ _id: incident._id, status: incident.status, createdAt: { $lte: twentyMinutesAgo } }, {
+                $set: { status: IncidentStatus.NO_RESOURCE_AVAILABLE, cancelledAt: now },
+                $push: { events: {
+                        status: IncidentStatus.NO_RESOURCE_AVAILABLE,
+                        at: now,
+                        actorType: 'SYSTEM',
+                        note: 'Emergency request expired: No hospital or ambulance accepted within 20 minutes.',
+                    } },
+            }, { new: true }).exec();
+            if (updated) {
+                await RescueDispatchOfferModel.updateMany({ incidentId: incident._id, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.EXPIRED, respondedAt: now, responseNote: 'Incident expired after 20 minutes timeout.' } }).exec();
+                if (updated.vehicleId) {
+                    await RescueVehicleModel.updateOne({ _id: updated.vehicleId, activeIncidentId: updated._id }, { $set: { status: ProviderOperationalStatus.AVAILABLE }, $unset: { activeIncidentId: 1 } }).exec();
+                }
+                await audit({
+                    incidentId: updated._id,
+                    actorType: 'SYSTEM',
+                    action: 'INCIDENT_EXPIRED_20MIN_TIMEOUT',
+                    reason: 'Request expired: No hospital or crew confirmed assignment within 20 minutes.',
+                });
+                publishMedxRescueEvent({
+                    type: 'incident.changed',
+                    incidentId: String(updated._id),
+                    incidentReference: updated.publicReference,
+                    status: updated.status,
+                });
+                count += 1;
+            }
+        }
+        return count;
     }
     async recordEmergencyEscalation(id, actorId, channel, reason) {
         if (!Types.ObjectId.isValid(id) || !Types.ObjectId.isValid(actorId))
@@ -792,6 +847,481 @@ export class MedxRescueService {
         await audit({ incidentId: incident._id, actorType: 'GUEST', action: 'GUEST_LOCATION_UPDATED' });
         publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, providerId: incident.providerId ? String(incident.providerId) : undefined, vehicleId: incident.vehicleId ? String(incident.vehicleId) : undefined });
         return this.publicIncident(incident);
+    }
+    async listLiveFleet(query = {}) {
+        await this.expireStaleIncidents();
+        await this.expirePendingOffers();
+        const vehicles = await RescueVehicleModel.find({ location: { $exists: true } })
+            .populate('providerId', 'displayName legalName operatingAreas verificationStatus operationalStatus')
+            .populate('activeIncidentId', 'publicReference status priority chiefComplaint location landmark')
+            .sort({ locationUpdatedAt: -1 })
+            .limit(300)
+            .lean()
+            .exec();
+        const activeIncidents = await RescueIncidentModel.find({
+            status: { $in: [
+                    IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.OFFERED_TO_CREW,
+                    IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, IncidentStatus.CREW_CONFIRMED,
+                    IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING,
+                ] },
+            location: { $exists: true },
+        }).select('publicReference status priority chiefComplaint location landmark locationDescription callerPhone createdAt vehicleId providerId')
+            .populate('vehicleId', 'registrationNumber makeModel vehicleClass location')
+            .lean()
+            .exec();
+        const facilities = await RescueFacilityModel.find({ active: true })
+            .select('name facilityType address location capabilities emergencyContactPhone')
+            .lean()
+            .exec();
+        return {
+            vehicles: vehicles.map((v) => {
+                const updatedAt = v.locationUpdatedAt ? new Date(v.locationUpdatedAt) : null;
+                const ageMs = updatedAt ? Math.max(0, Date.now() - updatedAt.getTime()) : Infinity;
+                return {
+                    id: String(v._id),
+                    registrationNumber: v.registrationNumber,
+                    makeModel: v.makeModel,
+                    vehicleClass: v.vehicleClass,
+                    status: v.status,
+                    location: v.location,
+                    locationUpdatedAt: v.locationUpdatedAt,
+                    locationAccuracyMeters: v.locationAccuracyMeters,
+                    freshness: ageMs <= 30_000 ? 'LIVE' : ageMs <= 180_000 ? 'DELAYED' : 'STALE',
+                    provider: v.providerId ? { id: String(v.providerId._id), displayName: v.providerId.displayName, legalName: v.providerId.legalName } : undefined,
+                    activeIncident: v.activeIncidentId ? { id: String(v.activeIncidentId._id), reference: v.activeIncidentId.publicReference, status: v.activeIncidentId.status, priority: v.activeIncidentId.priority, chiefComplaint: v.activeIncidentId.chiefComplaint, location: v.activeIncidentId.location } : undefined,
+                };
+            }),
+            incidents: activeIncidents.map((inc) => ({
+                id: String(inc._id),
+                reference: inc.publicReference,
+                status: inc.status,
+                priority: inc.priority,
+                chiefComplaint: inc.chiefComplaint,
+                landmark: inc.landmark || inc.locationDescription,
+                location: inc.location,
+                createdAt: inc.createdAt,
+                vehicle: inc.vehicleId ? { id: String(inc.vehicleId._id), registrationNumber: inc.vehicleId.registrationNumber, makeModel: inc.vehicleId.makeModel, location: inc.vehicleId.location } : undefined,
+            })),
+            facilities: facilities.map((f) => ({
+                id: String(f._id),
+                name: f.name,
+                facilityType: f.facilityType,
+                address: f.address,
+                location: f.location,
+                capabilities: f.capabilities,
+                phone: f.emergencyContactPhone,
+            })),
+            timestamp: new Date().toISOString(),
+        };
+    }
+    async seedDemoFleet() {
+        let provider = await RescueProviderModel.findOne({ displayName: 'MedXRescue Core Fleet Ogbomoso' }).exec();
+        if (!provider) {
+            provider = await RescueProviderModel.create({
+                legalName: 'MedXRescue Ogbomoso Emergency Services Ltd',
+                displayName: 'MedXRescue Core Fleet Ogbomoso',
+                registrationNumber: 'RC-998241',
+                contactName: 'Ogbomoso Dispatch Command',
+                contactPhone: '+2348009990000',
+                contactEmail: 'dispatch@medxrescue-ogbomoso.ng',
+                operatingAreas: ['Ogbomoso Central', 'LAUTECH Area', 'Takie', 'BUTH', 'Sabo', 'Caretaker', 'Oyo Town', 'Ibadan'],
+                verificationStatus: ProviderVerificationStatus.VERIFIED,
+                operationalStatus: ProviderOperationalStatus.AVAILABLE,
+            });
+        }
+        else {
+            provider.verificationStatus = ProviderVerificationStatus.VERIFIED;
+            provider.operationalStatus = ProviderOperationalStatus.AVAILABLE;
+            await provider.save();
+        }
+        // Seed Demo Facilities in Ogbomoso, Oyo State
+        const demoFacilities = [
+            {
+                name: 'LAUTECH Teaching Hospital (LTH), Ogbomoso',
+                facilityType: 'TERTIARY_HOSPITAL',
+                address: 'Ogbomoso-Ilorin Road, LAUTECH Campus, Ogbomoso, Oyo State',
+                emergencyContactPhone: '+2348033331111',
+                capabilities: ['Trauma Center', 'ICU', 'Emergency Surgery', 'Cardiac Life Support', 'Neonatal Care'],
+                location: { type: 'Point', coordinates: [4.2620, 8.1580] },
+            },
+            {
+                name: 'Bowen University Teaching Hospital (BUTH), Ogbomoso',
+                facilityType: 'SECONDARY_HOSPITAL',
+                address: 'BUTH Area, Takie-Sabo Road, Ogbomoso, Oyo State',
+                emergencyContactPhone: '+2348033332222',
+                capabilities: ['Emergency ED', 'Advanced Life Support', 'Maternal Emergency', 'Surgery'],
+                location: { type: 'Point', coordinates: [4.2480, 8.1290] },
+            },
+            {
+                name: 'State General Hospital, Ogbomoso',
+                facilityType: 'SECONDARY_HOSPITAL',
+                address: 'General Hospital Road, Caretaker, Ogbomoso, Oyo State',
+                emergencyContactPhone: '+2348033333333',
+                capabilities: ['General Emergency', 'Ambulance Base', 'Trauma Bay'],
+                location: { type: 'Point', coordinates: [4.2510, 8.1390] },
+            },
+        ];
+        for (const fac of demoFacilities) {
+            const existing = await RescueFacilityModel.findOne({ name: fac.name }).exec();
+            if (!existing) {
+                await RescueFacilityModel.create({ ...fac, active: true });
+            }
+        }
+        // Seed Demo Ambulances in Ogbomoso, Oyo State
+        const demoVehicles = [
+            { reg: 'AMB-001-OGB', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1580, lng: 4.2620 }, // LTH Ogbomoso
+            { reg: 'AMB-002-OGB', make: 'Toyota HiAce BLS', cls: RescueVehicleClass.BASIC_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1350, lng: 4.2430 }, // Takie Square
+            { reg: 'AMB-003-OGB', make: 'Ford Transit ICU', cls: RescueVehicleClass.ICU_AMBULANCE, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1290, lng: 4.2480 }, // BUTH Ogbomoso
+            { reg: 'AMB-004-OGB', make: 'Mercedes Sprinter ALS', cls: RescueVehicleClass.ADVANCED_LIFE_SUPPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1390, lng: 4.2510 }, // General Hospital
+            { reg: 'AMB-005-OGB', make: 'Nissan NV350 Transport', cls: RescueVehicleClass.PATIENT_TRANSPORT, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1250, lng: 4.2380 }, // Sabo Market
+            { reg: 'AMB-006-OGB', make: 'Peugeot Boxer Neonatal', cls: RescueVehicleClass.NEONATAL, status: ProviderOperationalStatus.AVAILABLE, lat: 8.1420, lng: 4.2490 }, // Caretaker Area
+        ];
+        const results = [];
+        for (const v of demoVehicles) {
+            const existing = await RescueVehicleModel.findOne({ registrationNumber: v.reg }).exec();
+            if (existing) {
+                existing.status = v.status;
+                existing.location = { type: 'Point', coordinates: [v.lng, v.lat] };
+                existing.locationUpdatedAt = new Date();
+                existing.locationAccuracyMeters = 5;
+                await existing.save();
+                results.push(existing);
+            }
+            else {
+                const created = await RescueVehicleModel.create({
+                    providerId: provider._id,
+                    registrationNumber: v.reg,
+                    makeModel: v.make,
+                    vehicleClass: v.cls,
+                    equipment: ['Defibrillator', 'Ventilator', 'ECG Monitor', 'Oxygen Cylinder', 'Trauma Kit'],
+                    crewQualifications: ['Paramedic', 'Emergency Medical Technician', 'Advanced Trauma Driver'],
+                    status: v.status,
+                    location: { type: 'Point', coordinates: [v.lng, v.lat] },
+                    locationUpdatedAt: new Date(),
+                    locationAccuracyMeters: 5,
+                });
+                results.push(created);
+            }
+        }
+        // Seed Sample Patient Emergency Incidents in Ogbomoso, Oyo State
+        const demoIncidents = [
+            {
+                publicReference: 'MRX-SOS-9921',
+                chiefComplaint: 'Acute Chest Pain & Severe Difficulty Breathing',
+                landmark: 'Takie Square, Ogbomoso, Oyo State',
+                callerName: 'Obaloluwa Ajayi',
+                callerPhone: '+2348012345678',
+                priority: IncidentPriority.CRITICAL,
+                triageUrgency: 'IMMEDIATE',
+                triageSuggestedUrgency: 'IMMEDIATE',
+                intakeChannel: 'APP_SOS',
+                location: { type: 'Point', coordinates: [4.2430, 8.1350] },
+                status: IncidentStatus.DISPATCH_REVIEW,
+            },
+            {
+                publicReference: 'MRX-SOS-3312',
+                chiefComplaint: 'Road Traffic Collision & Uncontrolled Bleeding',
+                landmark: 'LAUTECH Main Gate, Ogbomoso, Oyo State',
+                callerName: 'Emmanuel Obaloluwa',
+                callerPhone: '+2348023456789',
+                priority: IncidentPriority.CRITICAL,
+                triageUrgency: 'IMMEDIATE',
+                triageSuggestedUrgency: 'IMMEDIATE',
+                intakeChannel: 'APP_SOS',
+                location: { type: 'Point', coordinates: [4.2580, 8.1550] },
+                status: IncidentStatus.REQUEST_RECEIVED,
+            },
+            {
+                publicReference: 'MRX-SOS-4418',
+                chiefComplaint: 'High Fever, Convulsions & Respiratory Distress',
+                landmark: 'Sabo Market Area, Ogbomoso, Oyo State',
+                callerName: 'Grace Adenike',
+                callerPhone: '+2348034567890',
+                priority: IncidentPriority.URGENT,
+                triageUrgency: 'URGENT',
+                triageSuggestedUrgency: 'URGENT',
+                intakeChannel: 'APP_SOS',
+                location: { type: 'Point', coordinates: [4.2380, 8.1250] },
+                status: IncidentStatus.DISPATCH_REVIEW,
+            },
+        ];
+        for (const inc of demoIncidents) {
+            const existing = await RescueIncidentModel.findOne({ publicReference: inc.publicReference }).exec();
+            if (!existing) {
+                await RescueIncidentModel.create({
+                    ...inc,
+                    callerIsPatient: true,
+                    guestTokenHash: sha256('demo-token-' + inc.publicReference),
+                    guestTokenExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                    idempotencyKey: 'demo-idempotency-' + inc.publicReference,
+                    idempotencyFingerprint: sha256('demo-fingerprint-' + inc.publicReference),
+                    events: [{ status: inc.status, at: new Date(), actorType: 'GUEST', note: 'Emergency request received via Patient SOS App.' }],
+                });
+            }
+        }
+        publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(provider._id) });
+        return { provider, vehicles: results, seededIncidentsCount: demoIncidents.length };
+    }
+    // --- SRS Feature Extensions ---
+    async recordClinicalObservation(incidentId, recordedBy, input) {
+        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(recordedBy)) {
+            throw Object.assign(new Error('Valid incident and clinician IDs are required.'), { statusCode: 400 });
+        }
+        const incident = await RescueIncidentModel.findById(incidentId).select('_id publicReference').exec();
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        const obs = await RescueClinicalObservationModel.create({
+            incidentId: incident._id,
+            recordedBy: new Types.ObjectId(recordedBy),
+            recordedAt: new Date(),
+            heartRateBpm: input.heartRateBpm !== undefined ? Number(input.heartRateBpm) : undefined,
+            systolicBpMmHg: input.systolicBpMmHg !== undefined ? Number(input.systolicBpMmHg) : undefined,
+            diastolicBpMmHg: input.diastolicBpMmHg !== undefined ? Number(input.diastolicBpMmHg) : undefined,
+            spO2Percent: input.spO2Percent !== undefined ? Number(input.spO2Percent) : undefined,
+            respiratoryRateBpm: input.respiratoryRateBpm !== undefined ? Number(input.respiratoryRateBpm) : undefined,
+            temperatureCelsius: input.temperatureCelsius !== undefined ? Number(input.temperatureCelsius) : undefined,
+            gcsScore: input.gcsScore !== undefined ? Number(input.gcsScore) : undefined,
+            avpuScale: typeof input.avpuScale === 'string' && ['ALERT', 'VOICE', 'PAIN', 'UNRESPONSIVE'].includes(input.avpuScale) ? input.avpuScale : undefined,
+            ecgLeadResult: typeof input.ecgLeadResult === 'string' ? input.ecgLeadResult.slice(0, 500) : undefined,
+            deviceProvenance: typeof input.deviceProvenance === 'string' ? input.deviceProvenance.slice(0, 200) : undefined,
+            notes: typeof input.notes === 'string' ? input.notes.slice(0, 1000) : undefined,
+        });
+        await audit({ incidentId: incident._id, actorType: 'CREW', actorId: recordedBy, action: 'CLINICAL_OBSERVATION_RECORDED' });
+        publishMedxRescueEvent({ type: 'clinical.observation_recorded', incidentId: String(incident._id), incidentReference: incident.publicReference });
+        return obs;
+    }
+    async getClinicalObservations(incidentId) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        return RescueClinicalObservationModel.find({ incidentId }).sort({ recordedAt: -1 }).limit(100).lean().exec();
+    }
+    async createOrUpdateEPCR(incidentId, clinicianId, vehicleId, input) {
+        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(clinicianId) || !Types.ObjectId.isValid(vehicleId)) {
+            throw Object.assign(new Error('Valid incident, clinician, and vehicle IDs are required.'), { statusCode: 400 });
+        }
+        const incident = await RescueIncidentModel.findById(incidentId).exec();
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        const existing = await RescueEPCRModel.findOne({ incidentId }).exec();
+        if (existing && existing.isSigned) {
+            throw Object.assign(new Error('This ePCR has already been signed and finalized.'), { statusCode: 409 });
+        }
+        const payload = {
+            incidentId: incident._id,
+            vehicleId: new Types.ObjectId(vehicleId),
+            clinicianId: new Types.ObjectId(clinicianId),
+            chiefComplaint: typeof input.chiefComplaint === 'string' ? input.chiefComplaint.trim().slice(0, 500) : incident.chiefComplaint,
+            historyOfPresentIllness: typeof input.historyOfPresentIllness === 'string' ? input.historyOfPresentIllness.trim().slice(0, 3000) : undefined,
+            abcdeAssessment: input.abcdeAssessment && typeof input.abcdeAssessment === 'object' ? input.abcdeAssessment : undefined,
+            sampleHistory: input.sampleHistory && typeof input.sampleHistory === 'object' ? input.sampleHistory : undefined,
+            interventions: Array.isArray(input.interventions) ? input.interventions.slice(0, 50) : undefined,
+            triageTag: typeof input.triageTag === 'string' && ['RED', 'YELLOW', 'GREEN', 'BLACK'].includes(input.triageTag) ? input.triageTag : undefined,
+            receivingFacilityId: input.receivingFacilityId && Types.ObjectId.isValid(String(input.receivingFacilityId)) ? new Types.ObjectId(String(input.receivingFacilityId)) : incident.destinationFacilityId,
+            receivingClinicianName: typeof input.receivingClinicianName === 'string' ? input.receivingClinicianName.trim().slice(0, 150) : undefined,
+            clinicianSignature: typeof input.clinicianSignature === 'string' ? input.clinicianSignature.slice(0, 500) : undefined,
+            isSigned: input.isSigned === true,
+            completedAt: input.isSigned === true ? new Date() : undefined,
+        };
+        const epcr = await RescueEPCRModel.findOneAndUpdate({ incidentId: incident._id }, { $set: payload }, { new: true, upsert: true, setDefaultsOnInsert: true }).exec();
+        await audit({ incidentId: incident._id, actorType: 'CREW', actorId: clinicianId, action: epcr.isSigned ? 'EPCR_FINALIZED_AND_SIGNED' : 'EPCR_UPDATED' });
+        publishMedxRescueEvent({ type: 'incident.changed', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status });
+        return epcr;
+    }
+    async getEPCR(incidentId) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        return RescueEPCRModel.findOne({ incidentId }).populate('receivingFacilityId', 'name address emergencyContactPhone').lean().exec();
+    }
+    async submitPreShiftChecklist(vehicleId, providerId, performedBy, input) {
+        if (!Types.ObjectId.isValid(vehicleId) || !Types.ObjectId.isValid(providerId) || !Types.ObjectId.isValid(performedBy)) {
+            throw Object.assign(new Error('Valid vehicle, provider, and staff IDs are required.'), { statusCode: 400 });
+        }
+        const fuelLevelPercent = Number(input.fuelLevelPercent);
+        const oxygenPressurePsi = Number(input.oxygenPressurePsi);
+        if (!Number.isFinite(fuelLevelPercent) || fuelLevelPercent < 0 || fuelLevelPercent > 100) {
+            throw Object.assign(new Error('Fuel level percentage must be between 0 and 100.'), { statusCode: 400 });
+        }
+        if (!Number.isFinite(oxygenPressurePsi) || oxygenPressurePsi < 0) {
+            throw Object.assign(new Error('Oxygen pressure must be a non-negative number.'), { statusCode: 400 });
+        }
+        const aedFunctional = input.aedFunctional !== false;
+        const monitorFunctional = input.monitorFunctional !== false;
+        const airwayKitComplete = input.airwayKitComplete !== false;
+        const ppeStocked = input.ppeStocked !== false;
+        const stretcherFunctional = input.stretcherFunctional !== false;
+        const essentialMedsStocked = input.essentialMedsStocked !== false;
+        const passed = fuelLevelPercent >= 25 && oxygenPressurePsi >= 500 && aedFunctional && monitorFunctional && airwayKitComplete && ppeStocked && stretcherFunctional && essentialMedsStocked;
+        const checklist = await RescuePreShiftChecklistModel.create({
+            vehicleId: new Types.ObjectId(vehicleId),
+            providerId: new Types.ObjectId(providerId),
+            performedBy: new Types.ObjectId(performedBy),
+            checkedAt: new Date(),
+            fuelLevelPercent,
+            oxygenPressurePsi,
+            aedFunctional,
+            monitorFunctional,
+            airwayKitComplete,
+            ppeStocked,
+            stretcherFunctional,
+            essentialMedsStocked,
+            passed,
+            notes: typeof input.notes === 'string' ? input.notes.slice(0, 1000) : undefined,
+        });
+        await audit({ actorType: 'CREW', actorId: performedBy, action: 'PRE_SHIFT_CHECKLIST_SUBMITTED', metadata: { vehicleId, passed } });
+        return checklist;
+    }
+    async getMatchingCandidates(incidentId) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        const incident = (await RescueIncidentModel.findById(incidentId).lean().exec());
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        const vehicles = await this.listDispatchEligibleVehicles(incidentId);
+        const requiredClassPriorityMap = {
+            [IncidentPriority.CRITICAL]: [RescueVehicleClass.ADVANCED_LIFE_SUPPORT, RescueVehicleClass.ICU_AMBULANCE, RescueVehicleClass.NEONATAL],
+            [IncidentPriority.URGENT]: [RescueVehicleClass.ADVANCED_LIFE_SUPPORT, RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.ICU_AMBULANCE],
+            [IncidentPriority.ROUTINE]: [RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.PATIENT_TRANSPORT, RescueVehicleClass.ADVANCED_LIFE_SUPPORT],
+            [IncidentPriority.UNTRIAGED]: [RescueVehicleClass.BASIC_LIFE_SUPPORT, RescueVehicleClass.ADVANCED_LIFE_SUPPORT],
+        };
+        const preferredClasses = requiredClassPriorityMap[incident.priority] || [RescueVehicleClass.BASIC_LIFE_SUPPORT];
+        const rankedCandidates = vehicles.map((v) => {
+            let matchScore = 100;
+            const reasons = [];
+            if (v.distanceKm !== undefined) {
+                if (v.distanceKm <= 5) {
+                    matchScore += 30;
+                    reasons.push(`Close proximity (${v.distanceKm} km)`);
+                }
+                else if (v.distanceKm <= 15) {
+                    matchScore += 15;
+                    reasons.push(`Moderate proximity (${v.distanceKm} km)`);
+                }
+                else {
+                    matchScore -= 20;
+                    reasons.push(`Distant unit (${v.distanceKm} km)`);
+                }
+            }
+            if (preferredClasses.includes(v.vehicleClass)) {
+                matchScore += 25;
+                reasons.push(`Matched capability class (${v.vehicleClass.replace(/_/g, ' ')})`);
+            }
+            else {
+                matchScore -= 15;
+                reasons.push(`Sub-optimal vehicle class for ${incident.priority} priority`);
+            }
+            if (v.gpsFreshness === 'FRESH') {
+                matchScore += 15;
+                reasons.push('Live telemetry GPS verified');
+            }
+            else {
+                matchScore -= 30;
+                reasons.push('Telemetry delay');
+            }
+            return {
+                vehicle: v,
+                matchScore: Math.max(0, Math.min(100, matchScore)),
+                explainableReasons: reasons,
+                recommended: matchScore >= 60,
+            };
+        }).sort((a, b) => b.matchScore - a.matchScore);
+        return {
+            incidentId: String(incident._id),
+            priority: incident.priority,
+            candidates: rankedCandidates,
+        };
+    }
+    async activateHospitalTeam(incidentId, facilityId, activatedBy, teamType, notes) {
+        if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(facilityId) || !Types.ObjectId.isValid(activatedBy)) {
+            throw Object.assign(new Error('Valid incident, facility, and activator IDs are required.'), { statusCode: 400 });
+        }
+        const validTeams = ['RESUSCITATION', 'CARDIAC', 'STROKE', 'TRAUMA', 'OBSTETRIC', 'PEDIATRIC', 'THEATRE', 'ICU'];
+        if (!validTeams.includes(teamType))
+            throw Object.assign(new Error('Select a valid emergency hospital team.'), { statusCode: 400 });
+        const activation = await RescueHospitalTeamActivationModel.create({
+            incidentId: new Types.ObjectId(incidentId),
+            facilityId: new Types.ObjectId(facilityId),
+            activatedBy: new Types.ObjectId(activatedBy),
+            teamType,
+            notes: notes?.slice(0, 1000),
+            activatedAt: new Date(),
+        });
+        await audit({ incidentId: new Types.ObjectId(incidentId), actorType: 'STAFF', actorId: activatedBy, action: 'HOSPITAL_TEAM_ACTIVATED', metadata: { facilityId, teamType } });
+        publishMedxRescueEvent({ type: 'facility.changed', incidentId, facilityId, reason: `Emergency team pre-activation: ${teamType}` });
+        return activation;
+    }
+    async getHospitalTeamActivations(incidentId) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        return RescueHospitalTeamActivationModel.find({ incidentId }).sort({ activatedAt: -1 }).lean().exec();
+    }
+    async getFHIRBundle(incidentId) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        const incident = await RescueIncidentModel.findById(incidentId)
+            .populate('providerId', 'displayName legalName contactPhone')
+            .populate('vehicleId', 'registrationNumber makeModel vehicleClass')
+            .populate('destinationFacilityId', 'name facilityType address emergencyContactPhone')
+            .lean()
+            .exec();
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        const [epcr, observations] = await Promise.all([
+            RescueEPCRModel.findOne({ incidentId: incident._id }).lean().exec(),
+            RescueClinicalObservationModel.find({ incidentId: incident._id }).sort({ recordedAt: 1 }).lean().exec(),
+        ]);
+        const patientResource = {
+            resourceType: 'Patient',
+            id: `pat-${incident._id}`,
+            name: [{ text: incident.patientName || incident.callerName || 'Unknown Patient' }],
+            telecom: incident.callerPhone ? [{ system: 'phone', value: incident.callerPhone, use: 'mobile' }] : [],
+        };
+        const encounterResource = {
+            resourceType: 'Encounter',
+            id: `enc-${incident._id}`,
+            status: incident.status === 'HANDED_OVER' ? 'finished' : 'in-progress',
+            class: { system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: 'EMER', display: 'Emergency' },
+            subject: { reference: `Patient/pat-${incident._id}` },
+            period: { start: incident.createdAt, end: incident.handedOverAt || undefined },
+            reasonCode: [{ text: incident.chiefComplaint }],
+            serviceProvider: incident.destinationFacilityId ? { display: incident.destinationFacilityId.name } : undefined,
+        };
+        const observationResources = observations.map((obs, idx) => ({
+            resourceType: 'Observation',
+            id: `obs-${obs._id || idx}`,
+            status: 'final',
+            category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/observation-category', code: 'vital-signs', display: 'Vital Signs' }] }],
+            subject: { reference: `Patient/pat-${incident._id}` },
+            encounter: { reference: `Encounter/enc-${incident._id}` },
+            effectiveDateTime: obs.recordedAt,
+            component: [
+                obs.heartRateBpm ? { code: { text: 'Heart Rate' }, valueQuantity: { value: obs.heartRateBpm, unit: 'beats/min' } } : null,
+                obs.systolicBpMmHg ? { code: { text: 'Systolic Blood Pressure' }, valueQuantity: { value: obs.systolicBpMmHg, unit: 'mmHg' } } : null,
+                obs.spO2Percent ? { code: { text: 'Oxygen Saturation' }, valueQuantity: { value: obs.spO2Percent, unit: '%' } } : null,
+                obs.respiratoryRateBpm ? { code: { text: 'Respiratory Rate' }, valueQuantity: { value: obs.respiratoryRateBpm, unit: 'breaths/min' } } : null,
+            ].filter(Boolean),
+        }));
+        return {
+            resourceType: 'Bundle',
+            type: 'document',
+            timestamp: new Date().toISOString(),
+            entry: [
+                { resource: patientResource },
+                { resource: encounterResource },
+                ...observationResources.map((res) => ({ resource: res })),
+            ],
+        };
+    }
+    async createFamilyTrackingLink(reference, token) {
+        const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
+        if (!incident || !safeEqual(incident.guestTokenHash, sha256(token))) {
+            throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
+        }
+        const familyToken = crypto.createHmac('sha256', env.JWT_SECRET).update(`family:${reference}:${Date.now()}`).digest('base64url');
+        return {
+            reference: incident.publicReference,
+            familyToken,
+            expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000), // 4 hours validity
+        };
     }
 }
 export const medxRescueService = new MedxRescueService();

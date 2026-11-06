@@ -9,6 +9,8 @@ const chatAttachmentUpload = multer({ storage: multer.memoryStorage(), limits: {
 router.post('/payments/paystack/webhook', (req, res, next) => telemedicineController.paystackWebhook(req, res, next));
 // Minimal public QR/ID verification endpoint. It exposes only prescription validity metadata.
 router.get('/prescriptions/verify/:verificationId', (req, res, next) => telemedicineController.verifyPrescription(req, res, next));
+// Meeting tokens for emergency calls bypass middleware authentication
+router.get('/sessions/:id/meeting-token', (req, res, next) => telemedicineController.getMeetingToken(req, res, next));
 router.use(authenticate, requireAcceptedStaffInvitation);
 // Telemedicine directory for the authenticated hospital
 router.get('/directory', (req, res, next) => telemedicineController.getDirectory(req, res, next));
@@ -19,7 +21,6 @@ router.post('/sessions', (req, res, next) => telemedicineController.createSessio
 router.post('/sessions/from-appointment/:appointmentId', (req, res, next) => telemedicineController.createSessionFromAppointment(req, res, next));
 router.get('/sessions', (req, res, next) => telemedicineController.getSessions(req, res, next));
 router.get('/sessions/:id', (req, res, next) => telemedicineController.getSessionById(req, res, next));
-router.get('/sessions/:id/meeting-token', (req, res, next) => telemedicineController.getMeetingToken(req, res, next));
 router.post('/sessions/:id/payment/initialize', (req, res, next) => telemedicineController.initializePayment(req, res, next));
 router.post('/sessions/:id/payment/verify', (req, res, next) => telemedicineController.verifyPayment(req, res, next));
 router.patch('/sessions/:id/accept', (req, res, next) => telemedicineController.acceptSessionOrder(req, res, next));

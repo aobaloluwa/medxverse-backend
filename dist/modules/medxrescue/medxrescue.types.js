@@ -56,3 +56,10 @@ export var FacilityAcceptanceStatus;
     FacilityAcceptanceStatus["DECLINED"] = "DECLINED";
     FacilityAcceptanceStatus["EXPIRED"] = "EXPIRED";
 })(FacilityAcceptanceStatus || (FacilityAcceptanceStatus = {}));
+export var TriageTag;
+(function (TriageTag) {
+    TriageTag["RED"] = "RED";
+    TriageTag["YELLOW"] = "YELLOW";
+    TriageTag["GREEN"] = "GREEN";
+    TriageTag["BLACK"] = "BLACK";
+})(TriageTag || (TriageTag = {}));
