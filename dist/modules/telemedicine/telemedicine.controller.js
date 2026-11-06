@@ -56,6 +56,7 @@ function appointmentTimeToUtc(dateValue, timeValue, timezone) {
     }
     return new Date(guess);
 }
+const activeEmergencyCalls = new Map();
 export class TelemedicineController {
     async createSessionFromAppointment(req, res, next) {
         try {
@@ -201,6 +202,40 @@ export class TelemedicineController {
                 status,
                 consultationType,
             });
+            // Append active emergency calls for target recipient
+            const now = Date.now();
+            const emergencySessions = [];
+            const isPatient = authReq.user.userType === 'PATIENT';
+            for (const [id, activeCall] of activeEmergencyCalls.entries()) {
+                // Expire calls older than 5 minutes if not ended
+                if (now - activeCall.createdAt > 5 * 60 * 1000 || activeCall.callEndedAt) {
+                    activeEmergencyCalls.delete(id);
+                    continue;
+                }
+                // For patients: show emergency calls initiated by hospital STAFF
+                // For hospital staff/accounts: show emergency calls initiated by PATIENT
+                if ((isPatient && activeCall.callInitiatorType === 'STAFF') ||
+                    (!isPatient && activeCall.callInitiatorType === 'PATIENT')) {
+                    emergencySessions.push({
+                        _id: activeCall._id,
+                        activeCallId: activeCall.activeCallId,
+                        callStartedAt: activeCall.callStartedAt,
+                        callAcceptedAt: activeCall.callAcceptedAt,
+                        callEndedAt: activeCall.callEndedAt,
+                        callInitiatorType: activeCall.callInitiatorType,
+                        callerName: activeCall.callerName,
+                        consultationType: activeCall.consultationType,
+                        status: activeCall.status,
+                        patientId: isPatient ? String(authReq.user._id) : { name: activeCall.callerName || 'Emergency Patient' },
+                        doctorId: isPatient ? { name: activeCall.callerName || 'Hospital Dispatch' } : String(authReq.user._id),
+                        scheduledStartTime: activeCall.callStartedAt,
+                        meetingRoomId: activeCall._id,
+                    });
+                }
+            }
+            if (emergencySessions.length > 0) {
+                result.sessions = [...emergencySessions, ...(result.sessions || [])];
+            }
             res.status(200).json({ success: true, data: result });
         }
         catch (error) {
@@ -212,6 +247,26 @@ export class TelemedicineController {
             const authReq = req;
             const hospitalId = authReq.user.hospitalId;
             const id = req.params.id;
+            if (id.startsWith('emergency-')) {
+                const active = activeEmergencyCalls.get(id);
+                const currentTime = new Date().toISOString();
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        _id: id,
+                        activeCallId: active?.activeCallId || `call-${Date.now()}`,
+                        callStartedAt: active?.callStartedAt || currentTime,
+                        callAcceptedAt: active?.callAcceptedAt,
+                        callEndedAt: active?.callEndedAt,
+                        status: 'IN_PROGRESS',
+                        consultationType: 'VOICE',
+                        meetingRoomId: id,
+                        patientId: { name: active?.callerName || 'Emergency Patient' },
+                        doctorId: { name: 'Hospital Emergency Dispatch' },
+                    },
+                });
+                return;
+            }
             const patientId = authReq.user.userType === 'PATIENT' ? authReq.user._id : undefined;
             const doctorId = await resolveStaffRecordId(authReq);
             if (authReq.user.userType === 'STAFF' && !doctorId) {
@@ -679,12 +734,53 @@ export class TelemedicineController {
             const id = String(req.params.id || '');
             // Immediate Emergency Calls Bypass
             if (id.startsWith('emergency-')) {
+                const callId = req.body?.callId || `call-${Date.now()}`;
+                const now = new Date().toISOString();
+                let callerName = 'Emergency SOS Patient';
+                let callInitiatorType = 'PATIENT';
+                const authHeader = req.headers.authorization;
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                    try {
+                        const token = authHeader.slice(7).trim();
+                        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+                        if (decoded) {
+                            if (decoded.userType === 'STAFF' || decoded.userType === 'ACCOUNT' || decoded.userType === 'HOSPITAL') {
+                                callInitiatorType = 'STAFF';
+                                callerName = decoded.name || 'Hospital Emergency Dispatch';
+                            }
+                            else {
+                                callInitiatorType = 'PATIENT';
+                                const firstName = typeof decoded.firstName === 'string' ? decoded.firstName : '';
+                                const lastName = typeof decoded.lastName === 'string' ? decoded.lastName : '';
+                                const suppliedName = typeof decoded.name === 'string' ? decoded.name : '';
+                                callerName = (suppliedName || `${firstName} ${lastName}`.trim()).trim() || 'Emergency Patient';
+                            }
+                        }
+                    }
+                    catch {
+                        // Unauthenticated guest
+                    }
+                }
+                const refMatch = id.match(/MRX-[A-Z0-9-]+/i);
+                if (refMatch) {
+                    callerName = `${callerName} (${refMatch[0].toUpperCase()})`;
+                }
+                activeEmergencyCalls.set(id, {
+                    _id: id,
+                    activeCallId: callId,
+                    callStartedAt: now,
+                    callInitiatorType,
+                    callerName,
+                    consultationType: 'VOICE',
+                    status: 'IN_PROGRESS',
+                    createdAt: Date.now(),
+                });
                 res.status(200).json({
                     success: true,
                     data: {
                         _id: id,
-                        activeCallId: req.body?.callId || `call-${Date.now()}`,
-                        callStartedAt: new Date().toISOString(),
+                        activeCallId: callId,
+                        callStartedAt: now,
                     },
                 });
                 return;
@@ -803,6 +899,10 @@ export class TelemedicineController {
             const sessionId = String(req.params.id || '');
             // Emergency 911 Direct Call Bypass
             if (sessionId.startsWith('emergency-')) {
+                const active = activeEmergencyCalls.get(sessionId);
+                if (active) {
+                    active.callAcceptedAt = new Date().toISOString();
+                }
                 res.status(200).json({ success: true, message: 'Emergency call accepted.' });
                 return;
             }
@@ -864,6 +964,11 @@ export class TelemedicineController {
             const sessionId = String(req.params.id || '');
             // Emergency Call Summary Bypass
             if (sessionId.startsWith('emergency-')) {
+                const active = activeEmergencyCalls.get(sessionId);
+                if (active) {
+                    active.callEndedAt = new Date().toISOString();
+                }
+                activeEmergencyCalls.delete(sessionId);
                 res.status(200).json({ success: true, message: 'Emergency call ended.' });
                 return;
             }
