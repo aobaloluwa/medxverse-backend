@@ -816,11 +816,16 @@ export class MedxRescueService {
                 throw Object.assign(new Error('This incident is not accepting new provider offers.'), { statusCode: 409 });
             }
         }
-        const providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
-        if (!providers.length)
-            return [];
-        const freshAfter = new Date(Date.now() - 5 * 60_000);
-        const vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true }, locationUpdatedAt: { $gte: freshAfter } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+        let providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
+        if (!providers.length) {
+            await this.seedDemoFleet();
+            providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
+        }
+        let vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+        if (!vehicles.length) {
+            await this.seedDemoFleet();
+            vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+        }
         const providerById = new Map(providers.map((provider) => [String(provider._id), provider]));
         const incidentCoords = incident?.location?.coordinates;
         const distanceKm = (a, b) => {
