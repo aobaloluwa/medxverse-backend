@@ -565,7 +565,7 @@ export class TelemedicineController {
             id: String(user._id),
             name: displayName,
             ...(email ? { email } : {}),
-            moderator: !isPatient,
+            moderator: true,
           },
           features: {
             livestreaming: false,
