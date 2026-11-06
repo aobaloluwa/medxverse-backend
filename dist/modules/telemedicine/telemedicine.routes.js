@@ -9,8 +9,11 @@ const chatAttachmentUpload = multer({ storage: multer.memoryStorage(), limits: {
 router.post('/payments/paystack/webhook', (req, res, next) => telemedicineController.paystackWebhook(req, res, next));
 // Minimal public QR/ID verification endpoint. It exposes only prescription validity metadata.
 router.get('/prescriptions/verify/:verificationId', (req, res, next) => telemedicineController.verifyPrescription(req, res, next));
-// Meeting tokens for emergency calls bypass middleware authentication
+// Meeting tokens & call lifecycle endpoints for emergency calls bypass middleware authentication
 router.get('/sessions/:id/meeting-token', (req, res, next) => telemedicineController.getMeetingToken(req, res, next));
+router.post('/sessions/:id/call-started', (req, res, next) => telemedicineController.markCallStarted(req, res, next));
+router.post('/sessions/:id/call-accept', (req, res, next) => telemedicineController.acceptCall(req, res, next));
+router.post('/sessions/:id/call-summary', (req, res, next) => telemedicineController.recordCallSummary(req, res, next));
 router.use(authenticate, requireAcceptedStaffInvitation);
 // Telemedicine directory for the authenticated hospital
 router.get('/directory', (req, res, next) => telemedicineController.getDirectory(req, res, next));
@@ -25,9 +28,6 @@ router.post('/sessions/:id/payment/initialize', (req, res, next) => telemedicine
 router.post('/sessions/:id/payment/verify', (req, res, next) => telemedicineController.verifyPayment(req, res, next));
 router.patch('/sessions/:id/accept', (req, res, next) => telemedicineController.acceptSessionOrder(req, res, next));
 router.patch('/sessions/:id/status', (req, res, next) => telemedicineController.updateSessionStatus(req, res, next));
-router.post('/sessions/:id/call-started', (req, res, next) => telemedicineController.markCallStarted(req, res, next));
-router.post('/sessions/:id/call-accept', (req, res, next) => telemedicineController.acceptCall(req, res, next));
-router.post('/sessions/:id/call-summary', (req, res, next) => telemedicineController.recordCallSummary(req, res, next));
 // Real-time Chat & In-Consultation Messaging
 router.post('/sessions/:id/lab-requests', (req, res, next) => telemedicineController.createLabRequest(req, res, next));
 router.get('/sessions/:id/lab-requests', (req, res, next) => telemedicineController.getLabRequests(req, res, next));

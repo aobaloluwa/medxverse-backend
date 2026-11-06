@@ -17,9 +17,18 @@ router.get('/prescriptions/verify/:verificationId', (req, res, next) =>
   telemedicineController.verifyPrescription(req, res, next)
 );
 
-// Meeting tokens for emergency calls bypass middleware authentication
+// Meeting tokens & call lifecycle endpoints for emergency calls bypass middleware authentication
 router.get('/sessions/:id/meeting-token', (req, res, next) =>
   telemedicineController.getMeetingToken(req, res, next)
+);
+router.post('/sessions/:id/call-started', (req, res, next) =>
+  telemedicineController.markCallStarted(req, res, next)
+);
+router.post('/sessions/:id/call-accept', (req, res, next) =>
+  telemedicineController.acceptCall(req, res, next)
+);
+router.post('/sessions/:id/call-summary', (req, res, next) =>
+  telemedicineController.recordCallSummary(req, res, next)
 );
 
 router.use(authenticate, requireAcceptedStaffInvitation);
@@ -58,15 +67,6 @@ router.patch('/sessions/:id/accept', (req, res, next) =>
 );
 router.patch('/sessions/:id/status', (req, res, next) =>
   telemedicineController.updateSessionStatus(req, res, next)
-);
-router.post('/sessions/:id/call-started', (req, res, next) =>
-  telemedicineController.markCallStarted(req, res, next)
-);
-router.post('/sessions/:id/call-accept', (req, res, next) =>
-  telemedicineController.acceptCall(req, res, next)
-);
-router.post('/sessions/:id/call-summary', (req, res, next) =>
-  telemedicineController.recordCallSummary(req, res, next)
 );
 
 // Real-time Chat & In-Consultation Messaging
