@@ -1435,11 +1435,17 @@ export class MedxRescueService {
     const lastName = nameParts.slice(1).join(' ') || 'Crew';
     const staffRecord = await Staff.create({
       hospitalId: new Types.ObjectId(hospitalId),
+      staffId: `STF-AMB-${Math.floor(10000 + Math.random() * 90000)}`,
       firstName,
       lastName,
-      role: crewRole,
-      title: 'Paramedic',
+      role: 'OTHER',
+      title: crewRole || 'Paramedic',
       department: 'Emergency & Rescue',
+      employment: {
+        employmentType: 'FULL_TIME',
+        classification: 'GENERAL',
+        startDate: new Date(),
+      },
       contact: { phone, email },
       isActive: true,
       status: 'ACTIVE',
