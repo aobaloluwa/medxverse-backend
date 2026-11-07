@@ -932,7 +932,7 @@ export class MedxRescueService {
             queryConditions.push({ vehicleId: { $in: vehicleIds } });
         }
         const filter = queryConditions.length > 0 ? (queryConditions.length > 1 ? { $or: queryConditions } : queryConditions[0]) : {};
-        const offers = await RescueDispatchOfferModel.find({
+        let offers = await RescueDispatchOfferModel.find({
             ...filter,
             status: { $in: [DispatchOfferStatus.PENDING, DispatchOfferStatus.ACCEPTED] },
         })
@@ -941,11 +941,19 @@ export class MedxRescueService {
             .sort({ offeredAt: -1 })
             .lean()
             .exec();
+        // Fallback: If 0 offers match this specific provider ID, return all active PENDING offers
+        if (offers.length === 0) {
+            offers = await RescueDispatchOfferModel.find({
+                status: DispatchOfferStatus.PENDING,
+            })
+                .populate('incidentId')
+                .populate('vehicleId')
+                .sort({ offeredAt: -1 })
+                .lean()
+                .exec();
+        }
+        // Also fetch all active incidents in dispatch wave/review/en-route statuses
         const activeIncidents = await RescueIncidentModel.find({
-            $or: [
-                ...(providerId && Types.ObjectId.isValid(providerId) ? [{ providerId: new Types.ObjectId(providerId) }] : []),
-                ...(vehicleIds.length ? [{ vehicleId: { $in: vehicleIds } }] : []),
-            ],
             status: { $in: ['OFFERED_TO_CREW', 'CREW_ACCEPTED_PENDING_CONFIRMATION', 'CREW_CONFIRMED', 'EN_ROUTE', 'ON_SCENE', 'TRANSPORTING'] },
         })
             .sort({ updatedAt: -1 })

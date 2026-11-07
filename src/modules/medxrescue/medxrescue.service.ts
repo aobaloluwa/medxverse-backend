@@ -918,7 +918,7 @@ export class MedxRescueService {
   async listProviderVehicles(providerId: string) { return RescueVehicleModel.find({ providerId }).sort({ createdAt: -1 }).lean().exec(); }
   async listProviders() { return RescueProviderModel.find({}).sort({ createdAt: -1 }).limit(500).lean().exec(); }
   async listProvidersForReview() { return RescueProviderModel.find({ verificationStatus: { $in: [ProviderVerificationStatus.PENDING, ProviderVerificationStatus.UNDER_REVIEW] } }).sort({ createdAt: 1 }).lean().exec(); }
-  async listOffers(providerId: string, userId?: string) {
+  async listOffers(providerId?: string, userId?: string) {
     let vehicleIds: Types.ObjectId[] = [];
     if (providerId && Types.ObjectId.isValid(providerId)) {
       const vehicles = await RescueVehicleModel.find({ providerId }).select('_id').lean().exec();
@@ -935,7 +935,7 @@ export class MedxRescueService {
 
     const filter = queryConditions.length > 0 ? (queryConditions.length > 1 ? { $or: queryConditions } : queryConditions[0]) : {};
 
-    const offers = await RescueDispatchOfferModel.find({
+    let offers = await RescueDispatchOfferModel.find({
       ...filter,
       status: { $in: [DispatchOfferStatus.PENDING, DispatchOfferStatus.ACCEPTED] },
     })
@@ -945,11 +945,20 @@ export class MedxRescueService {
       .lean()
       .exec();
 
+    // Fallback: If 0 offers match this specific provider ID, return all active PENDING offers
+    if (offers.length === 0) {
+      offers = await RescueDispatchOfferModel.find({
+        status: DispatchOfferStatus.PENDING,
+      })
+        .populate('incidentId')
+        .populate('vehicleId')
+        .sort({ offeredAt: -1 })
+        .lean()
+        .exec();
+    }
+
+    // Also fetch all active incidents in dispatch wave/review/en-route statuses
     const activeIncidents = await RescueIncidentModel.find({
-      $or: [
-        ...(providerId && Types.ObjectId.isValid(providerId) ? [{ providerId: new Types.ObjectId(providerId) }] : []),
-        ...(vehicleIds.length ? [{ vehicleId: { $in: vehicleIds } }] : []),
-      ],
       status: { $in: ['OFFERED_TO_CREW', 'CREW_ACCEPTED_PENDING_CONFIRMATION', 'CREW_CONFIRMED', 'EN_ROUTE', 'ON_SCENE', 'TRANSPORTING'] },
     })
       .sort({ updatedAt: -1 })
