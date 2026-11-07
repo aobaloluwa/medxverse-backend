@@ -429,6 +429,27 @@ export class MedxRescueController {
             sendError(res, error);
         }
     }
+    async reviewVehicle(req, res) {
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER']))
+            return;
+        try {
+            const { status, reason } = req.body || {};
+            const data = await medxRescueService.reviewVehicle(String(req.params.vehicleId), status, actorId(req), typeof reason === 'string' ? reason : undefined);
+            res.json({ success: true, data, message: `Vehicle marked ${status}.` });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
+    async reapplyVehicle(req, res) {
+        try {
+            const data = await medxRescueService.reapplyVehicle(String(req.params.vehicleId), actorId(req), req.body || {});
+            res.json({ success: true, data, message: 'Vehicle application re-submitted for hospital review.' });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
     async confirmAcceptedAssignment(req, res) {
         if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;

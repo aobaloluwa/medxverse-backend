@@ -39,6 +39,8 @@ export interface IRescueProvider extends Document {
 export interface IRescueVehicle extends Document {
   providerId: Types.ObjectId; registrationNumber: string; makeModel: string; vehicleClass: RescueVehicleClass;
   equipment: string[]; crewQualifications: string[]; status: ProviderOperationalStatus | 'DISPATCHED' | 'MAINTENANCE';
+  verificationStatus?: 'PENDING' | 'UNDER_REVIEW' | 'VERIFIED' | 'REJECTED';
+  rejectionReason?: string; reviewedBy?: Types.ObjectId; reviewedAt?: Date; hospitalId?: Types.ObjectId;
   location?: IGeoPoint; locationUpdatedAt?: Date; locationAccuracyMeters?: number; activeIncidentId?: Types.ObjectId;
   createdAt: Date; updatedAt: Date;
 }

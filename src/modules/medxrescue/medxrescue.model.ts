@@ -47,6 +47,11 @@ const VehicleSchema = new Schema<IRescueVehicle>({
   registrationNumber: { type: String, required: true, trim: true, uppercase: true }, makeModel: { type: String, required: true, trim: true, maxlength: 120 },
   vehicleClass: { type: String, enum: Object.values(RescueVehicleClass), required: true, index: true }, equipment: [{ type: String, trim: true }],
   crewQualifications: [{ type: String, trim: true }], status: { type: String, enum: [...Object.values(ProviderOperationalStatus), 'DISPATCHED', 'MAINTENANCE'], default: ProviderOperationalStatus.OFFLINE, index: true },
+  verificationStatus: { type: String, enum: ['PENDING', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'], default: 'PENDING', index: true },
+  rejectionReason: { type: String, maxlength: 1000 },
+  reviewedBy: Schema.Types.ObjectId,
+  reviewedAt: Date,
+  hospitalId: { type: Schema.Types.ObjectId, ref: 'Account', index: true },
   location: GeoPointSchema, locationUpdatedAt: Date, locationAccuracyMeters: { type: Number, min: 0, max: 100000 }, activeIncidentId: { type: Schema.Types.ObjectId, ref: 'RescueIncident' },
 }, { timestamps: true });
 VehicleSchema.index({ providerId: 1, registrationNumber: 1 }, { unique: true });

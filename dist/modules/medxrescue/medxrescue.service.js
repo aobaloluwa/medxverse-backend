@@ -522,6 +522,59 @@ export class MedxRescueService {
         publishMedxRescueEvent({ type: 'vehicle.location', providerId: String(providerId), vehicleId: String(updated._id) });
         return updated;
     }
+    async reviewVehicle(vehicleId, status, reviewerId, reason) {
+        if (!Types.ObjectId.isValid(vehicleId))
+            throw Object.assign(new Error('Invalid vehicle ID.'), { statusCode: 400 });
+        if (!['VERIFIED', 'REJECTED', 'UNDER_REVIEW'].includes(status))
+            throw Object.assign(new Error('Invalid verification status.'), { statusCode: 400 });
+        if (status === 'REJECTED' && (!reason || !reason.trim())) {
+            throw Object.assign(new Error('Provide a reason for rejecting the vehicle application so the crew can make amendments.'), { statusCode: 400 });
+        }
+        const vehicle = await RescueVehicleModel.findByIdAndUpdate(vehicleId, {
+            $set: {
+                verificationStatus: status,
+                rejectionReason: status === 'REJECTED' ? reason?.trim() : undefined,
+                reviewedBy: new Types.ObjectId(reviewerId),
+                reviewedAt: new Date(),
+                ...(status === 'VERIFIED' ? { status: ProviderOperationalStatus.AVAILABLE, locationUpdatedAt: new Date() } : { status: ProviderOperationalStatus.OFFLINE }),
+            },
+        }, { new: true }).exec();
+        if (!vehicle)
+            throw Object.assign(new Error('Vehicle not found.'), { statusCode: 404 });
+        await audit({ actorType: 'STAFF', actorId: reviewerId, action: 'RESCUE_VEHICLE_REVIEWED', reason, metadata: { vehicleId, status } });
+        publishMedxRescueEvent({ type: 'vehicle.location', vehicleId });
+        return vehicle;
+    }
+    async reapplyVehicle(vehicleId, userId, input) {
+        if (!Types.ObjectId.isValid(vehicleId))
+            throw Object.assign(new Error('Invalid vehicle ID.'), { statusCode: 400 });
+        const vehicle = await RescueVehicleModel.findById(vehicleId).exec();
+        if (!vehicle)
+            throw Object.assign(new Error('Vehicle not found.'), { statusCode: 404 });
+        const registrationNumber = typeof input.registrationNumber === 'string' && input.registrationNumber.trim()
+            ? input.registrationNumber.trim().toUpperCase()
+            : vehicle.registrationNumber;
+        const makeModel = typeof input.makeModel === 'string' && input.makeModel.trim()
+            ? input.makeModel.trim()
+            : vehicle.makeModel;
+        const vehicleClass = input.vehicleClass || vehicle.vehicleClass;
+        const equipment = Array.isArray(input.equipment) ? input.equipment.map(String).slice(0, 100) : vehicle.equipment;
+        const crewQualifications = Array.isArray(input.crewQualifications) ? input.crewQualifications.map(String).slice(0, 100) : vehicle.crewQualifications;
+        vehicle.registrationNumber = registrationNumber;
+        vehicle.makeModel = makeModel;
+        vehicle.vehicleClass = vehicleClass;
+        vehicle.equipment = equipment;
+        vehicle.crewQualifications = crewQualifications;
+        vehicle.verificationStatus = 'PENDING';
+        vehicle.rejectionReason = undefined;
+        vehicle.status = ProviderOperationalStatus.OFFLINE;
+        if (input.hospitalId && Types.ObjectId.isValid(String(input.hospitalId))) {
+            vehicle.hospitalId = new Types.ObjectId(String(input.hospitalId));
+        }
+        await vehicle.save();
+        await audit({ actorType: 'CREW', actorId: userId, action: 'RESCUE_VEHICLE_REAPPLIED', metadata: { vehicleId } });
+        return vehicle;
+    }
     async createDispatchOffer(incidentId, vehicleIdsInput, dispatcherId, expiresInSeconds = 90) {
         const vehicleIds = [...new Set((Array.isArray(vehicleIdsInput) ? vehicleIdsInput : [vehicleIdsInput]).map(String))];
         if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(dispatcherId) || vehicleIds.length < 1 || vehicleIds.length > 20 || vehicleIds.some((id) => !Types.ObjectId.isValid(id))) {
