@@ -1428,8 +1428,6 @@ export class MedxRescueService {
       throw Object.assign(new Error('An account with this email address already exists. Please sign in.'), { statusCode: 409 });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
-
     const nameParts = name.split(' ');
     const firstName = nameParts[0] || 'Paramedic';
     const lastName = nameParts.slice(1).join(' ') || 'Crew';
@@ -1451,11 +1449,12 @@ export class MedxRescueService {
       status: 'ACTIVE',
     });
 
+    // Pass raw password to StaffUser.create so StaffUserSchema.pre('save') hook hashes it ONCE with salt 12.
     const staffUser = await StaffUser.create({
       hospitalId: new Types.ObjectId(hospitalId),
       staffId: staffRecord._id,
       email,
-      password: passwordHash,
+      password: password,
       role: crewRole,
       status: 'ACTIVE',
       isActive: true,
@@ -1551,7 +1550,20 @@ export class MedxRescueService {
       throw Object.assign(new Error('Invalid email address or password.'), { statusCode: 401 });
     }
 
-    const isMatch = await bcrypt.compare(password, staffUser.password);
+    let isMatch = await bcrypt.compare(password, staffUser.password);
+    if (!isMatch) {
+      try {
+        const passwordHashOnce = await bcrypt.hash(password, 10);
+        isMatch = await bcrypt.compare(passwordHashOnce, staffUser.password);
+        if (isMatch) {
+          staffUser.password = password;
+          await staffUser.save();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     if (!isMatch) {
       throw Object.assign(new Error('Invalid email address or password.'), { statusCode: 401 });
     }
