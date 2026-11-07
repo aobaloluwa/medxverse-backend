@@ -918,7 +918,55 @@ export class MedxRescueService {
     async listProviderVehicles(providerId) { return RescueVehicleModel.find({ providerId }).sort({ createdAt: -1 }).lean().exec(); }
     async listProviders() { return RescueProviderModel.find({}).sort({ createdAt: -1 }).limit(500).lean().exec(); }
     async listProvidersForReview() { return RescueProviderModel.find({ verificationStatus: { $in: [ProviderVerificationStatus.PENDING, ProviderVerificationStatus.UNDER_REVIEW] } }).sort({ createdAt: 1 }).lean().exec(); }
-    async listOffers(providerId) { return RescueDispatchOfferModel.find({ providerId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: new Date() } }).populate('incidentId').populate('vehicleId').sort({ offeredAt: 1 }).lean().exec(); }
+    async listOffers(providerId, userId) {
+        let vehicleIds = [];
+        if (providerId && Types.ObjectId.isValid(providerId)) {
+            const vehicles = await RescueVehicleModel.find({ providerId }).select('_id').lean().exec();
+            vehicleIds = vehicles.map(v => v._id);
+        }
+        const queryConditions = [];
+        if (providerId && Types.ObjectId.isValid(providerId)) {
+            queryConditions.push({ providerId: new Types.ObjectId(providerId) });
+        }
+        if (vehicleIds.length) {
+            queryConditions.push({ vehicleId: { $in: vehicleIds } });
+        }
+        const filter = queryConditions.length > 0 ? (queryConditions.length > 1 ? { $or: queryConditions } : queryConditions[0]) : {};
+        const offers = await RescueDispatchOfferModel.find({
+            ...filter,
+            status: { $in: [DispatchOfferStatus.PENDING, DispatchOfferStatus.ACCEPTED] },
+        })
+            .populate('incidentId')
+            .populate('vehicleId')
+            .sort({ offeredAt: -1 })
+            .lean()
+            .exec();
+        const activeIncidents = await RescueIncidentModel.find({
+            $or: [
+                ...(providerId && Types.ObjectId.isValid(providerId) ? [{ providerId: new Types.ObjectId(providerId) }] : []),
+                ...(vehicleIds.length ? [{ vehicleId: { $in: vehicleIds } }] : []),
+            ],
+            status: { $in: ['OFFERED_TO_CREW', 'CREW_ACCEPTED_PENDING_CONFIRMATION', 'CREW_CONFIRMED', 'EN_ROUTE', 'ON_SCENE', 'TRANSPORTING'] },
+        })
+            .sort({ updatedAt: -1 })
+            .lean()
+            .exec();
+        const offerIncidentIds = new Set(offers.map(o => String(o.incidentId?._id || o.incidentId)));
+        for (const incident of activeIncidents) {
+            if (!offerIncidentIds.has(String(incident._id))) {
+                offers.push({
+                    _id: incident._id,
+                    incidentId: incident,
+                    vehicleId: incident.vehicleId || vehicleIds[0],
+                    providerId: incident.providerId || providerId,
+                    status: incident.status === 'CREW_CONFIRMED' || incident.status === 'EN_ROUTE' ? DispatchOfferStatus.ACCEPTED : DispatchOfferStatus.PENDING,
+                    offeredAt: incident.createdAt,
+                    expiresAt: new Date(Date.now() + 30 * 60_000),
+                });
+            }
+        }
+        return offers;
+    }
     async updateIncidentLocation(reference, token, input) {
         const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
         if (!incident || !safeEqual(incident.guestTokenHash, sha256(token)))
