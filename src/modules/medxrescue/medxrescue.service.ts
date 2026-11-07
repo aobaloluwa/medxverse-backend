@@ -1615,6 +1615,11 @@ export class MedxRescueService {
       { upsert: true, new: true },
     ).exec();
 
+    const hasCoords = input.latitude !== undefined && input.latitude !== null && input.longitude !== undefined && input.longitude !== null;
+    const latNum = Number(input.latitude);
+    const lngNum = Number(input.longitude);
+    const validCoords = hasCoords && Number.isFinite(latNum) && Number.isFinite(lngNum);
+
     let vehicle = await RescueVehicleModel.findOne({ registrationNumber: regNumber }).exec();
     if (!vehicle) {
       vehicle = await RescueVehicleModel.create({
@@ -1625,10 +1630,18 @@ export class MedxRescueService {
         equipment: ['Defibrillator', 'Ventilator', 'Oxygen Cylinder', 'ECG Monitor', 'Emergency Trauma Kit'],
         crewQualifications: ['Paramedic', 'Emergency Medical Technician', 'ACLS Certified'],
         status: ProviderOperationalStatus.AVAILABLE,
-        location: { type: 'Point', coordinates: [4.2480, 8.1290] },
-        locationUpdatedAt: new Date(),
-        locationAccuracyMeters: 5,
+        verificationStatus: 'PENDING',
+        hospitalId: new Types.ObjectId(hospitalId),
+        ...(validCoords ? {
+          location: geoPoint(latNum, lngNum),
+          locationUpdatedAt: new Date(),
+          locationAccuracyMeters: Number(input.accuracyMeters) || 5,
+        } : {}),
       });
+    } else if (validCoords) {
+      vehicle.location = geoPoint(latNum, lngNum) as any;
+      vehicle.locationUpdatedAt = new Date();
+      await vehicle.save();
     }
 
     const token = jwt.sign(
