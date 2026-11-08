@@ -11,6 +11,7 @@ router.get('/incidents/public/:reference', apiLimiter, (req, res) => void medxRe
 router.patch('/incidents/public/:reference/location', apiLimiter, (req, res) => void medxRescueController.updateGuestLocation(req, res));
 router.post('/incidents/public/:reference/cancel', apiLimiter, (req, res) => void medxRescueController.cancelGuestIncident(req, res));
 router.post('/incidents/public/:reference/family-link', apiLimiter, (req, res) => void medxRescueController.createFamilyTrackingLink(req, res));
+router.get('/patient/active-emergency', (req, res) => void medxRescueController.getPatientActiveEmergency(req, res));
 // Provider applications & crew auth are public
 router.post('/providers/apply', apiLimiter, (req, res) => void medxRescueController.submitProvider(req, res));
 router.get('/auth/hospitals', apiLimiter, (req, res) => void medxRescueController.listHospitals(req, res));

@@ -24,7 +24,7 @@ export interface IGeoPoint { type: 'Point'; coordinates: [number, number] }
 export interface IIncidentEvent { status: IncidentStatus; at: Date; actorType: 'GUEST' | 'STAFF' | 'SYSTEM' | 'CREW'; actorId?: Types.ObjectId; note?: string }
 export interface IEmergencyIncident extends Document {
   publicReference: string; status: IncidentStatus; priority: IncidentPriority; intakeChannel: string;
-  callerName?: string; callerPhone: string; callerIsPatient: boolean; patientName?: string; patientAge?: number;
+  callerName?: string; callerPhone: string; callerIsPatient: boolean; patientName?: string; patientAge?: number; patientUserId?: Types.ObjectId;
   chiefComplaint: string; additionalDetails?: string; locationDescription?: string; triageAnswers?: { questionId: string; answer: string }[]; triageUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageSuggestedUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageReviewedBy?: Types.ObjectId; triageReviewedAt?: Date; location?: IGeoPoint; landmark?: string; locationAccuracyMeters?: number;
   destinationFacilityId?: Types.ObjectId; providerId?: Types.ObjectId; vehicleId?: Types.ObjectId; acceptedOfferId?: Types.ObjectId;
   guestTokenHash: string; guestTokenExpiresAt: Date; idempotencyKey: string; idempotencyFingerprint: string; events: IIncidentEvent[];

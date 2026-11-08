@@ -33,7 +33,7 @@ async function audit(input) {
     await RescueAuditModel.create({ ...input, actorId: input.actorId && Types.ObjectId.isValid(input.actorId) ? new Types.ObjectId(input.actorId) : undefined });
 }
 export class MedxRescueService {
-    async createGuestIncident(input, idempotencyKey) {
+    async createGuestIncident(input, idempotencyKey, patientUserId) {
         if (!idempotencyKey || idempotencyKey.length > 160)
             throw Object.assign(new Error('A valid Idempotency-Key request header is required.'), { statusCode: 400 });
         const callerPhone = requireText(input.callerPhone, 'Caller phone', 40);
@@ -89,6 +89,7 @@ export class MedxRescueService {
                 callerPhone, callerIsPatient, patientName, patientAge,
                 chiefComplaint, additionalDetails, triageAnswers, triageUrgency, triageSuggestedUrgency,
                 location, landmark, locationDescription, locationAccuracyMeters,
+                patientUserId: patientUserId && Types.ObjectId.isValid(patientUserId) ? new Types.ObjectId(patientUserId) : undefined,
                 guestTokenHash: sha256(token), guestTokenExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
                 idempotencyKey, idempotencyFingerprint: fingerprint,
                 events: [{ status: IncidentStatus.REQUEST_RECEIVED, at: new Date(), actorType: 'GUEST', note: 'Emergency request received; dispatcher review is required.' }],
@@ -202,6 +203,48 @@ export class MedxRescueService {
             }
         }
         return result;
+    }
+    async getPatientActiveEmergency(userId) {
+        if (!Types.ObjectId.isValid(userId))
+            return null;
+        const incident = await RescueIncidentModel.findOne({
+            patientUserId: new Types.ObjectId(userId),
+            status: { $nin: [IncidentStatus.HANDED_OVER, IncidentStatus.CANCELLED, IncidentStatus.NO_RESOURCE_AVAILABLE] },
+        })
+            .select('+guestTokenHash')
+            .sort({ createdAt: -1 })
+            .exec();
+        if (!incident)
+            return null;
+        const result = this.publicIncident(incident);
+        if ([IncidentStatus.CREW_CONFIRMED, IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING].includes(incident.status) &&
+            result.crewConfirmed &&
+            incident.vehicleId) {
+            const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId })
+                .select('location locationUpdatedAt locationAccuracyMeters status')
+                .lean()
+                .exec();
+            if (vehicle?.location?.coordinates?.length === 2 && vehicle.locationUpdatedAt) {
+                const updatedAt = new Date(vehicle.locationUpdatedAt);
+                const ageMs = Math.max(0, Date.now() - updatedAt.getTime());
+                result.tracking = {
+                    latitude: vehicle.location.coordinates[1],
+                    longitude: vehicle.location.coordinates[0],
+                    locationUpdatedAt: updatedAt,
+                    locationAccuracyMeters: vehicle.locationAccuracyMeters,
+                    freshness: ageMs <= 15_000 ? 'LIVE' : ageMs <= 60_000 ? 'DELAYED' : 'STALE',
+                    isStale: ageMs > 60_000,
+                };
+            }
+            else {
+                result.tracking = { freshness: 'UNAVAILABLE', isStale: true };
+            }
+        }
+        return {
+            incident: result,
+            reference: incident.publicReference,
+            accessToken: incident.guestTokenHash,
+        };
     }
     async listIncidents(query, hospitalAccountId) {
         await this.expireStaleIncidents();

@@ -57,8 +57,23 @@ export class MedxRescueController {
     async createGuestIncident(req, res) {
         try {
             const key = String(req.header('Idempotency-Key') || '');
-            const result = await medxRescueService.createGuestIncident(req.body || {}, key);
+            const patientUserId = actorId(req);
+            const result = await medxRescueService.createGuestIncident(req.body || {}, key, patientUserId || undefined);
             res.status(result.reused ? 200 : 201).json({ success: true, data: result.incident, accessToken: result.accessToken, reused: result.reused, message: 'Request received. This does not mean an ambulance has been dispatched. A human dispatcher must review the request and a verified crew must accept before dispatch is confirmed.' });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
+    async getPatientActiveEmergency(req, res) {
+        try {
+            const patientUserId = actorId(req);
+            if (!patientUserId) {
+                res.json({ success: true, data: null });
+                return;
+            }
+            const data = await medxRescueService.getPatientActiveEmergency(patientUserId);
+            res.json({ success: true, data });
         }
         catch (error) {
             sendError(res, error);

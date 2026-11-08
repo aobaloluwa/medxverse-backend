@@ -15,6 +15,7 @@ const IncidentSchema = new Schema<IEmergencyIncident>({
   intakeChannel: { type: String, required: true, enum: ['GUEST_WEB', 'APP_SOS', 'CALL_CENTRE', 'ASSISTED', 'HOSPITAL_TRANSFER', 'OTHER'] },
   callerName: { type: String, trim: true, maxlength: 120 }, callerPhone: { type: String, required: true, trim: true, maxlength: 40 },
   callerIsPatient: { type: Boolean, default: true }, patientName: { type: String, trim: true, maxlength: 120 }, patientAge: { type: Number, min: 0, max: 120 },
+  patientUserId: { type: Schema.Types.ObjectId, index: true },
   chiefComplaint: { type: String, required: true, trim: true, maxlength: 500 }, additionalDetails: { type: String, trim: true, maxlength: 2000 },
   triageAnswers: { type: [{ questionId: { type: String, required: true, trim: true, maxlength: 80 }, answer: { type: String, required: true, trim: true, maxlength: 300 } }], default: [] },
   triageUrgency: { type: String, enum: ['IMMEDIATE', 'URGENT', 'ROUTINE', 'UNKNOWN'], default: 'UNKNOWN', index: true },
