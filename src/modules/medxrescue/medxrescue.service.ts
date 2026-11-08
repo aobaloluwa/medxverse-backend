@@ -377,8 +377,6 @@ export class MedxRescueService {
   }
 
   async updateIncidentStatus(id: string, status: IncidentStatus, actorId: string, reason?: string) {
-    // These states are only entered by the explicit offer/accept workflow.
-    if (status === IncidentStatus.HANDED_OVER) throw Object.assign(new Error('Use the clinical handover workflow to record hospital acceptance and handover.'), { statusCode: 409 });
     if ([IncidentStatus.OFFERED_TO_CREW, IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION, IncidentStatus.CREW_CONFIRMED].includes(status)) {
       throw Object.assign(new Error('Use the dispatch-offer workflow for offer and crew-confirmation states.'), { statusCode: 409 });
     }
@@ -399,12 +397,12 @@ export class MedxRescueService {
     if (!allowed[current.status]?.includes(status)) throw Object.assign(new Error(`Invalid status transition: ${current.status} → ${status}.`), { statusCode: 409 });
     const updated = await RescueIncidentModel.findOneAndUpdate({ _id: id, status: current.status }, { $set: { status, ...(status === IncidentStatus.CANCELLED ? { cancelledAt: new Date() } : {}) }, $push: { events: { status, at: new Date(), actorType: 'STAFF', actorId: new Types.ObjectId(actorId), note: reason?.slice(0, 500) } } }, { new: true }).exec();
     if (!updated) throw Object.assign(new Error('Incident changed concurrently. Refresh and try again.'), { statusCode: 409 });
-    if (status === IncidentStatus.CANCELLED) {
-      await RescueDispatchOfferModel.updateMany({ incidentId: updated._id, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.WITHDRAWN, respondedAt: new Date(), responseNote: 'Incident cancelled by dispatcher.' } }).exec();
+    if (status === IncidentStatus.CANCELLED || status === IncidentStatus.HANDED_OVER) {
+      await RescueDispatchOfferModel.updateMany({ incidentId: updated._id, status: DispatchOfferStatus.PENDING }, { $set: { status: DispatchOfferStatus.WITHDRAWN, respondedAt: new Date(), responseNote: 'Incident completed or cancelled.' } }).exec();
       if (updated.vehicleId) {
         await RescueVehicleModel.updateOne(
           { _id: updated.vehicleId, activeIncidentId: updated._id },
-          { $set: { status: ProviderOperationalStatus.OFFLINE }, $unset: { activeIncidentId: 1 } },
+          { $set: { status: ProviderOperationalStatus.AVAILABLE }, $unset: { activeIncidentId: 1 } },
         ).exec();
       }
     }
