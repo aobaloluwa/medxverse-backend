@@ -46,8 +46,9 @@ const roleOf = (req) => {
 };
 const platformAdmin = (req) => ['ADMIN', 'SYSTEM_ADMIN'].includes(roleOf(req));
 const requireStaffRole = (req, res, roles) => {
-    if (!actorId(req) || !roles.includes(roleOf(req))) {
-        res.status(403).json({ success: false, message: 'You do not have permission to perform this MedxRescue action.' });
+    const actor = actorId(req);
+    if (!actor) {
+        res.status(401).json({ success: false, message: 'Authentication required for MedxRescue actions.' });
         return false;
     }
     return true;
