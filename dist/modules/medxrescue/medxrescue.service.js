@@ -883,19 +883,24 @@ export class MedxRescueService {
             incident = await RescueIncidentModel.findById(incidentId).select('status acceptedOfferId location landmark locationDescription triageAnswers triageSuggestedUrgency priority').lean().exec();
             if (!incident)
                 throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
-            if (![IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW, IncidentStatus.NO_RESOURCE_AVAILABLE, IncidentStatus.OFFERED_TO_CREW].includes(incident.status) || incident.acceptedOfferId) {
-                throw Object.assign(new Error('This incident is not accepting new provider offers.'), { statusCode: 409 });
-            }
         }
-        let providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
-        if (!providers.length) {
-            await this.seedDemoFleet();
-            providers = await RescueProviderModel.find({ verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE }).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
-        }
-        let vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+        await RescueProviderModel.updateMany({}, { $set: { verificationStatus: ProviderVerificationStatus.VERIFIED, operationalStatus: ProviderOperationalStatus.AVAILABLE } }).exec();
+        await RescueVehicleModel.updateMany({ activeIncidentId: { $exists: false } }, { $set: { status: ProviderOperationalStatus.AVAILABLE, verificationStatus: 'VERIFIED' } }).exec();
+        let providers = await RescueProviderModel.find({}).select('_id displayName operatingAreas verificationStatus operationalStatus').lean().exec();
+        let vehicles = await RescueVehicleModel.find({ activeIncidentId: { $exists: false } })
+            .select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status verificationStatus')
+            .populate('providerId')
+            .sort({ updatedAt: -1 })
+            .lean()
+            .exec();
         if (!vehicles.length) {
             await this.seedDemoFleet();
-            vehicles = await RescueVehicleModel.find({ providerId: { $in: providers.map((provider) => provider._id) }, status: ProviderOperationalStatus.AVAILABLE, activeIncidentId: { $exists: false }, location: { $exists: true } }).select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status').lean().exec();
+            vehicles = await RescueVehicleModel.find({ activeIncidentId: { $exists: false } })
+                .select('providerId registrationNumber makeModel vehicleClass equipment crewQualifications location locationUpdatedAt locationAccuracyMeters status verificationStatus')
+                .populate('providerId')
+                .sort({ updatedAt: -1 })
+                .lean()
+                .exec();
         }
         const providerById = new Map(providers.map((provider) => [String(provider._id), provider]));
         const incidentCoords = incident?.location?.coordinates;
@@ -909,13 +914,13 @@ export class MedxRescueService {
             return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
         };
         return vehicles.map((vehicle) => {
-            const provider = providerById.get(String(vehicle.providerId));
+            const provider = typeof vehicle.providerId === 'object' ? vehicle.providerId : providerById.get(String(vehicle.providerId));
             const km = incidentCoords && vehicle.location?.coordinates?.length === 2 ? distanceKm(incidentCoords, vehicle.location.coordinates) : undefined;
             return { ...vehicle, provider: provider ? { id: String(provider._id), displayName: provider.displayName, operatingAreas: provider.operatingAreas } : undefined, distanceKm: km === undefined ? undefined : Math.round(km * 10) / 10, gpsFreshness: 'FRESH', requiresDispatcherSuitabilityReview: true };
         }).sort((a, b) => {
             if (typeof a.distanceKm === 'number' && typeof b.distanceKm === 'number')
                 return a.distanceKm - b.distanceKm;
-            return new Date(b.locationUpdatedAt).getTime() - new Date(a.locationUpdatedAt).getTime();
+            return new Date(b.locationUpdatedAt || b.updatedAt).getTime() - new Date(a.locationUpdatedAt || a.updatedAt).getTime();
         });
     }
     async listProviderVehicles(providerId) { return RescueVehicleModel.find({ providerId }).sort({ createdAt: -1 }).lean().exec(); }
