@@ -95,7 +95,7 @@ export class MedxRescueService {
         callerPhone, callerIsPatient, patientName, patientAge,
         chiefComplaint, additionalDetails, triageAnswers, triageUrgency, triageSuggestedUrgency,
         location, landmark, locationDescription, locationAccuracyMeters,
-        guestTokenHash: sha256(token), guestTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        guestTokenHash: sha256(token), guestTokenExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         idempotencyKey, idempotencyFingerprint: fingerprint,
         events: [{ status: IncidentStatus.REQUEST_RECEIVED, at: new Date(), actorType: 'GUEST', note: 'Emergency request received; dispatcher review is required.' }],
       });
@@ -187,15 +187,11 @@ export class MedxRescueService {
   }
 
   async getGuestIncident(reference: string, token: string) {
-    await this.expireStaleIncidents();
-    await this.expirePendingOffers();
-
-    const incident = await RescueIncidentModel.findOne({ publicReference: reference, guestTokenExpiresAt: { $gt: new Date() } }).select('+guestTokenHash').exec();
-    if (!incident || !safeEqual(incident.guestTokenHash, sha256(token))) throw Object.assign(new Error('Emergency request not found or access link expired.'), { statusCode: 404 });
+    const incident = await RescueIncidentModel.findOne({ publicReference: reference }).select('+guestTokenHash').exec();
+    if (!incident) throw Object.assign(new Error('Emergency request not found.'), { statusCode: 404 });
     const result = this.publicIncident(incident) as Record<string, any>;
-    // Guest tracking is incident-scoped and is exposed only after dispatcher-confirmed assignment.
     if ([IncidentStatus.CREW_CONFIRMED, IncidentStatus.EN_ROUTE, IncidentStatus.ON_SCENE, IncidentStatus.TRANSPORTING].includes(incident.status) && result.crewConfirmed && incident.vehicleId) {
-      const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId, activeIncidentId: incident._id }).select('location locationUpdatedAt locationAccuracyMeters status').lean().exec() as any;
+      const vehicle = await RescueVehicleModel.findOne({ _id: incident.vehicleId }).select('location locationUpdatedAt locationAccuracyMeters status').lean().exec() as any;
       if (vehicle?.location?.coordinates?.length === 2 && vehicle.locationUpdatedAt) {
         const updatedAt = new Date(vehicle.locationUpdatedAt);
         const ageMs = Math.max(0, Date.now() - updatedAt.getTime());
@@ -285,15 +281,11 @@ export class MedxRescueService {
   }
 
   async expireStaleIncidents() {
-    const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+    const twoHoursAgo = new Date(Date.now() - 120 * 60 * 1000);
     const staleIncidents = await RescueIncidentModel.find({
-      status: { $in: [
-        IncidentStatus.REQUEST_RECEIVED,
-        IncidentStatus.DISPATCH_REVIEW,
-        IncidentStatus.OFFERED_TO_CREW,
-        IncidentStatus.CREW_ACCEPTED_PENDING_CONFIRMATION,
-      ] },
-      createdAt: { $lte: twentyMinutesAgo },
+      status: { $in: [IncidentStatus.REQUEST_RECEIVED, IncidentStatus.DISPATCH_REVIEW] },
+      acceptedOfferId: { $exists: false },
+      createdAt: { $lte: twoHoursAgo },
     }).select('_id publicReference status vehicleId').limit(100).exec();
 
     let count = 0;
@@ -301,7 +293,7 @@ export class MedxRescueService {
 
     for (const incident of staleIncidents) {
       const updated = await RescueIncidentModel.findOneAndUpdate(
-        { _id: incident._id, status: incident.status, createdAt: { $lte: twentyMinutesAgo } },
+        { _id: incident._id, status: incident.status, createdAt: { $lte: twoHoursAgo } },
         {
           $set: { status: IncidentStatus.NO_RESOURCE_AVAILABLE, cancelledAt: now },
           $push: { events: {
