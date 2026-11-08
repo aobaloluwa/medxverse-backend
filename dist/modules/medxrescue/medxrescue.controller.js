@@ -495,11 +495,20 @@ export class MedxRescueController {
         try {
             const role = roleOf(req);
             const providerId = ['ADMIN', 'SYSTEM_ADMIN'].includes(role) ? String(req.query.providerId || '') : String(await medxRescueService.resolveProviderIdForUser(actorId(req), ['PROVIDER_ADMIN', 'CREW', 'DRIVER', 'PARAMEDIC']) || '');
-            if (!providerId) {
-                res.status(403).json({ success: false, message: 'Your account is not linked to a rescue provider.' });
-                return;
-            }
-            res.json({ success: true, data: await medxRescueService.listOffers(providerId) });
+            res.json({ success: true, data: await medxRescueService.listOffers(providerId || undefined, actorId(req)) });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
+    async listHospitalOfferHistory(req, res) {
+        if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
+            return;
+        try {
+            const role = roleOf(req);
+            const hospitalId = role === 'HOSPITAL_ADMIN' ? accountIdOf(req) : undefined;
+            const data = await medxRescueService.listHospitalOfferHistory(hospitalId);
+            res.json({ success: true, data });
         }
         catch (error) {
             sendError(res, error);

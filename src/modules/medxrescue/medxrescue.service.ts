@@ -955,31 +955,29 @@ export class MedxRescueService {
 
     const filter = queryConditions.length > 0 ? (queryConditions.length > 1 ? { $or: queryConditions } : queryConditions[0]) : {};
 
-    let offers = await RescueDispatchOfferModel.find({
-      ...filter,
-      status: { $in: [DispatchOfferStatus.PENDING, DispatchOfferStatus.ACCEPTED] },
-    })
+    let offers = await RescueDispatchOfferModel.find(filter)
       .populate('incidentId')
       .populate('vehicleId')
+      .populate('providerId')
       .sort({ offeredAt: -1 })
       .lean()
       .exec();
 
-    // Fallback: If 0 offers match this specific provider ID, return all active PENDING offers
+    // Fallback: If 0 offers match this specific provider ID, return all offers
     if (offers.length === 0) {
-      offers = await RescueDispatchOfferModel.find({
-        status: DispatchOfferStatus.PENDING,
-      })
+      offers = await RescueDispatchOfferModel.find({})
         .populate('incidentId')
         .populate('vehicleId')
+        .populate('providerId')
         .sort({ offeredAt: -1 })
+        .limit(200)
         .lean()
         .exec();
     }
 
-    // Also fetch all active incidents in dispatch wave/review/en-route statuses
+    // Also fetch all active incidents
     const activeIncidents = await RescueIncidentModel.find({
-      status: { $in: ['OFFERED_TO_CREW', 'CREW_ACCEPTED_PENDING_CONFIRMATION', 'CREW_CONFIRMED', 'EN_ROUTE', 'ON_SCENE', 'TRANSPORTING'] },
+      status: { $in: ['OFFERED_TO_CREW', 'CREW_ACCEPTED_PENDING_CONFIRMATION', 'CREW_CONFIRMED', 'EN_ROUTE', 'ON_SCENE', 'TRANSPORTING', 'HANDED_OVER'] },
     })
       .sort({ updatedAt: -1 })
       .lean()
@@ -993,12 +991,34 @@ export class MedxRescueService {
           incidentId: incident as any,
           vehicleId: (incident.vehicleId as any) || vehicleIds[0],
           providerId: incident.providerId || providerId,
-          status: incident.status === 'CREW_CONFIRMED' || incident.status === 'EN_ROUTE' ? DispatchOfferStatus.ACCEPTED : DispatchOfferStatus.PENDING,
+          status: incident.status === 'HANDED_OVER' || incident.status === 'CREW_CONFIRMED' || incident.status === 'EN_ROUTE' ? DispatchOfferStatus.ACCEPTED : DispatchOfferStatus.PENDING,
           offeredAt: incident.createdAt,
           expiresAt: new Date(Date.now() + 30 * 60_000),
         } as any);
       }
     }
+
+    return offers;
+  }
+
+  async listHospitalOfferHistory(hospitalId?: string) {
+    let incidentFilter: Record<string, unknown> = {};
+    if (hospitalId && Types.ObjectId.isValid(hospitalId)) {
+      const hospitalIncidents = await RescueIncidentModel.find({ hospitalId: new Types.ObjectId(hospitalId) }).select('_id').lean().exec();
+      const incidentIds = hospitalIncidents.map(i => i._id);
+      if (incidentIds.length) {
+        incidentFilter = { incidentId: { $in: incidentIds } };
+      }
+    }
+
+    const offers = await RescueDispatchOfferModel.find(incidentFilter)
+      .populate('incidentId')
+      .populate('vehicleId')
+      .populate('providerId')
+      .sort({ offeredAt: -1 })
+      .limit(500)
+      .lean()
+      .exec();
 
     return offers;
   }
