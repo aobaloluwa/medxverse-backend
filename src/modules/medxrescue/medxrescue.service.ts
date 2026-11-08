@@ -263,6 +263,14 @@ export class MedxRescueService {
         { new: true },
       ).exec();
       if (!offer) continue;
+
+      if (item.vehicleId) {
+        await RescueVehicleModel.findOneAndUpdate(
+          { _id: item.vehicleId, activeIncidentId: { $exists: false } },
+          { $set: { status: ProviderOperationalStatus.AVAILABLE, locationUpdatedAt: now } },
+        ).exec();
+      }
+
       const liveOffers = await RescueDispatchOfferModel.countDocuments({ incidentId: item.incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: now } }).exec();
       const incident = liveOffers === 0 ? await RescueIncidentModel.findOneAndUpdate(
         { _id: item.incidentId, status: IncidentStatus.OFFERED_TO_CREW, acceptedOfferId: { $exists: false } },

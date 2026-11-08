@@ -252,6 +252,9 @@ export class MedxRescueService {
             const offer = await RescueDispatchOfferModel.findOneAndUpdate({ _id: item._id, status: DispatchOfferStatus.PENDING, expiresAt: { $lte: now } }, { $set: { status: DispatchOfferStatus.EXPIRED, respondedAt: now, responseNote: 'Offer expired without crew response.' } }, { new: true }).exec();
             if (!offer)
                 continue;
+            if (item.vehicleId) {
+                await RescueVehicleModel.findOneAndUpdate({ _id: item.vehicleId, activeIncidentId: { $exists: false } }, { $set: { status: ProviderOperationalStatus.AVAILABLE, locationUpdatedAt: now } }).exec();
+            }
             const liveOffers = await RescueDispatchOfferModel.countDocuments({ incidentId: item.incidentId, status: DispatchOfferStatus.PENDING, expiresAt: { $gt: now } }).exec();
             const incident = liveOffers === 0 ? await RescueIncidentModel.findOneAndUpdate({ _id: item.incidentId, status: IncidentStatus.OFFERED_TO_CREW, acceptedOfferId: { $exists: false } }, { $set: { status: IncidentStatus.DISPATCH_REVIEW }, $push: { events: { status: IncidentStatus.DISPATCH_REVIEW, at: now, actorType: 'SYSTEM', note: 'All dispatch offers expired without crew response; dispatcher review required.' } } }, { new: true }).exec() : await RescueIncidentModel.findById(item.incidentId).exec();
             await audit({ incidentId: item.incidentId, actorType: 'SYSTEM', action: 'DISPATCH_OFFER_EXPIRED', metadata: { offerId: String(item._id), incidentReturnedToReview: Boolean(incident) } });
