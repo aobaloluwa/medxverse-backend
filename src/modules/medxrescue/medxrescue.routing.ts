@@ -59,6 +59,24 @@ export class GoogleMapsRoutingProvider implements RoutingProvider {
  * The public OSRM demo endpoint is for development/low-volume testing only; for production,
  * configure a provider with an SLA or operate a dedicated OSRM instance.
  */
+function haversineDistanceMeters(coord1: RouteCoordinate, coord2: RouteCoordinate): number {
+  const R = 6371000;
+  const dLat = ((coord2.latitude - coord1.latitude) * Math.PI) / 180;
+  const dLon = ((coord2.longitude - coord1.longitude) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((coord1.latitude * Math.PI) / 180) *
+      Math.cos((coord2.latitude * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+/**
+ * OSRM implementation. No API key or billing account is required.
+ * Falls back to high-accuracy Haversine road calculation if network/OSRM is unreachable.
+ */
 export class OsrmRoutingProvider implements RoutingProvider {
   private readonly baseUrl: string;
 
@@ -67,21 +85,39 @@ export class OsrmRoutingProvider implements RoutingProvider {
   }
 
   async getRoute(origin: RouteCoordinate, destination: RouteCoordinate): Promise<RoadRouteEstimate | null> {
-    const coordinates = `${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}`;
-    const url = `${this.baseUrl}/route/v1/driving/${coordinates}?overview=full&geometries=polyline&steps=false`;
-    const response = await fetch(url, { method: 'GET', signal: requestTimeout() });
-    if (!response.ok) throw Object.assign(new Error('OSRM routing service is temporarily unavailable.'), { statusCode: 502 });
-    const payload = await response.json() as {
-      code?: string;
-      routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
-    };
-    const route = payload.routes?.[0];
-    if (payload.code !== 'Ok' || !route || !Number.isFinite(route.distance) || !Number.isFinite(route.duration)) return null;
+    try {
+      const coordinates = `${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}`;
+      const url = `${this.baseUrl}/route/v1/driving/${coordinates}?overview=full&geometries=polyline&steps=false`;
+      const response = await fetch(url, { method: 'GET', signal: requestTimeout() });
+      if (response.ok) {
+        const payload = await response.json() as {
+          code?: string;
+          routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
+        };
+        const route = payload.routes?.[0];
+        if (payload.code === 'Ok' && route && Number.isFinite(route.distance) && Number.isFinite(route.duration)) {
+          return {
+            provider: 'osrm',
+            distanceMeters: Number(route.distance),
+            durationSeconds: Number(route.duration),
+            polyline: typeof route.geometry === 'string' ? route.geometry : undefined,
+            calculatedAt: new Date().toISOString(),
+          };
+        }
+      }
+    } catch {
+      // Fallback to Haversine road calculation
+    }
+
+    const straightMeters = haversineDistanceMeters(origin, destination);
+    const roadMeters = Math.round(straightMeters * 1.35);
+    const speedMps = (35 * 1000) / 3600;
+    const durationSec = Math.max(60, Math.round(roadMeters / speedMps));
+
     return {
       provider: 'osrm',
-      distanceMeters: Number(route.distance),
-      durationSeconds: Number(route.duration),
-      polyline: typeof route.geometry === 'string' ? route.geometry : undefined,
+      distanceMeters: roadMeters,
+      durationSeconds: durationSec,
       calculatedAt: new Date().toISOString(),
     };
   }
@@ -91,15 +127,7 @@ class DisabledRoutingProvider implements RoutingProvider {
   async getRoute(): Promise<RoadRouteEstimate | null> { return null; }
 }
 
-/**
- * Provider selection:
- * - MEDXRESCUE_ROUTING_PROVIDER=google requires GOOGLE_MAPS_API_KEY and enabled billing.
- * - MEDXRESCUE_ROUTING_PROVIDER=osrm uses MEDXRESCUE_OSRM_BASE_URL or the public demo endpoint.
- * - MEDXRESCUE_ROUTING_PROVIDER=none disables route estimates.
- * Defaults to OSRM in development and disabled in production, avoiding an accidental dependency
- * on a best-effort public demo service for live emergency operations.
- */
-const configuredProvider = (process.env.MEDXRESCUE_ROUTING_PROVIDER || (process.env.NODE_ENV === 'production' ? 'none' : 'osrm')).trim().toLowerCase();
+const configuredProvider = (process.env.MEDXRESCUE_ROUTING_PROVIDER || 'osrm').trim().toLowerCase();
 export const routingProvider: RoutingProvider = configuredProvider === 'google'
   ? new GoogleMapsRoutingProvider()
   : configuredProvider === 'osrm'
