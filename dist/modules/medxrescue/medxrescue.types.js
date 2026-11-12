@@ -18,7 +18,19 @@ export var IncidentPriority;
     IncidentPriority["ROUTINE"] = "ROUTINE";
     IncidentPriority["URGENT"] = "URGENT";
     IncidentPriority["CRITICAL"] = "CRITICAL";
+    IncidentPriority["ALPHA"] = "ALPHA";
+    IncidentPriority["BRAVO"] = "BRAVO";
+    IncidentPriority["CHARLIE"] = "CHARLIE";
+    IncidentPriority["DELTA"] = "DELTA";
+    IncidentPriority["ECHO"] = "ECHO";
 })(IncidentPriority || (IncidentPriority = {}));
+export var AgencyType;
+(function (AgencyType) {
+    AgencyType["AMBULANCE"] = "AMBULANCE";
+    AgencyType["FIRE"] = "FIRE";
+    AgencyType["POLICE"] = "POLICE";
+    AgencyType["FRSC"] = "FRSC";
+})(AgencyType || (AgencyType = {}));
 export var ProviderVerificationStatus;
 (function (ProviderVerificationStatus) {
     ProviderVerificationStatus["PENDING"] = "PENDING";

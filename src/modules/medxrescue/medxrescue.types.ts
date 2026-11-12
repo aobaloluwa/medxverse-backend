@@ -14,7 +14,8 @@ export enum IncidentStatus {
   NO_RESOURCE_AVAILABLE = 'NO_RESOURCE_AVAILABLE',
 }
 
-export enum IncidentPriority { UNTRIAGED = 'UNTRIAGED', ROUTINE = 'ROUTINE', URGENT = 'URGENT', CRITICAL = 'CRITICAL' }
+export enum IncidentPriority { UNTRIAGED = 'UNTRIAGED', ROUTINE = 'ROUTINE', URGENT = 'URGENT', CRITICAL = 'CRITICAL', ALPHA = 'ALPHA', BRAVO = 'BRAVO', CHARLIE = 'CHARLIE', DELTA = 'DELTA', ECHO = 'ECHO' }
+export enum AgencyType { AMBULANCE = 'AMBULANCE', FIRE = 'FIRE', POLICE = 'POLICE', FRSC = 'FRSC' }
 export enum ProviderVerificationStatus { PENDING = 'PENDING', UNDER_REVIEW = 'UNDER_REVIEW', VERIFIED = 'VERIFIED', REJECTED = 'REJECTED', SUSPENDED = 'SUSPENDED' }
 export enum ProviderOperationalStatus { OFFLINE = 'OFFLINE', AVAILABLE = 'AVAILABLE', BUSY = 'BUSY' }
 export enum RescueVehicleClass { BASIC_LIFE_SUPPORT = 'BASIC_LIFE_SUPPORT', ADVANCED_LIFE_SUPPORT = 'ADVANCED_LIFE_SUPPORT', PATIENT_TRANSPORT = 'PATIENT_TRANSPORT', ICU_AMBULANCE = 'ICU_AMBULANCE', NEONATAL = 'NEONATAL' }
@@ -25,7 +26,10 @@ export interface IIncidentEvent { status: IncidentStatus; at: Date; actorType: '
 export interface IEmergencyIncident extends Document {
   publicReference: string; status: IncidentStatus; priority: IncidentPriority; intakeChannel: string;
   callerName?: string; callerPhone: string; callerIsPatient: boolean; patientName?: string; patientAge?: number; patientUserId?: Types.ObjectId;
-  chiefComplaint: string; additionalDetails?: string; locationDescription?: string; triageAnswers?: { questionId: string; answer: string }[]; triageUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageSuggestedUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageReviewedBy?: Types.ObjectId; triageReviewedAt?: Date; location?: IGeoPoint; landmark?: string; locationAccuracyMeters?: number;
+  chiefComplaint: string; additionalDetails?: string; locationDescription?: string; floorBuilding?: string;
+  silentMode?: boolean; crashDetected?: boolean; agencyTypes?: string[];
+  mistReport?: { mechanism?: string; injuries?: string; signs?: string; treatment?: string };
+  triageAnswers?: { questionId: string; answer: string }[]; triageUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageSuggestedUrgency?: 'IMMEDIATE' | 'URGENT' | 'ROUTINE' | 'UNKNOWN'; triageReviewedBy?: Types.ObjectId; triageReviewedAt?: Date; location?: IGeoPoint; landmark?: string; locationAccuracyMeters?: number;
   destinationFacilityId?: Types.ObjectId; providerId?: Types.ObjectId; vehicleId?: Types.ObjectId; acceptedOfferId?: Types.ObjectId;
   guestTokenHash: string; guestTokenExpiresAt: Date; idempotencyKey: string; idempotencyFingerprint: string; events: IIncidentEvent[];
   createdAt: Date; updatedAt: Date; cancelledAt?: Date; handedOverAt?: Date;
@@ -66,6 +70,11 @@ export interface IRescueFacility extends Document {
   operatingHours?: string;
   emergencyContactPhone: string;
   active: boolean;
+  liveCapacity?: {
+    resusBaysAvailable: number;
+    edBedsAvailable: number;
+    diversionStatus: boolean;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
