@@ -8,6 +8,7 @@ const router = Router();
 // Public guest access: no patient account, patient ID, or login is required.
 router.post('/incidents', apiLimiter, (req, res) => void medxRescueController.createGuestIncident(req, res));
 router.post('/incidents/:id/match-hospital', apiLimiter, (req, res) => void medxRescueController.matchSmartHospital(req, res));
+router.get('/incidents/:id/preview-hospital-match', apiLimiter, (req, res) => void medxRescueController.previewSmartHospital(req, res));
 router.get('/incidents/public/:reference', apiLimiter, (req, res) => void medxRescueController.getGuestIncident(req, res));
 router.patch('/incidents/public/:reference/location', apiLimiter, (req, res) => void medxRescueController.updateGuestLocation(req, res));
 router.post('/incidents/public/:reference/cancel', apiLimiter, (req, res) => void medxRescueController.cancelGuestIncident(req, res));

@@ -99,6 +99,17 @@ export class MedxRescueController {
             sendError(res, error);
         }
     }
+    async previewSmartHospital(req, res) {
+        try {
+            const incidentId = String(req.params.id);
+            const excludeFacilityIds = typeof req.query.exclude === 'string' ? req.query.exclude.split(',').filter(Boolean) : [];
+            const data = await medxRescueService.previewSmartHospital(incidentId, excludeFacilityIds);
+            res.json({ success: true, data, message: 'Hospital match preview generated.' });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
     async setFacilityEmergencyAvailability(req, res) {
         try {
             const facilityId = String(req.params.facilityId);

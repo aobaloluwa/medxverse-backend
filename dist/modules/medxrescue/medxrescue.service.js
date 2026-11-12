@@ -1832,6 +1832,63 @@ export class MedxRescueService {
             vehicle: vehicle ? { _id: String(vehicle._id), registrationNumber: vehicle.registrationNumber, makeModel: vehicle.makeModel } : null,
         };
     }
+    async previewSmartHospital(incidentId, excludeFacilityIds = []) {
+        if (!Types.ObjectId.isValid(incidentId))
+            throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
+        const incident = await RescueIncidentModel.findById(incidentId).lean().exec();
+        if (!incident)
+            throw Object.assign(new Error('Emergency incident not found.'), { statusCode: 404 });
+        if (!incident.location || !incident.location.coordinates || incident.location.coordinates.length !== 2) {
+            throw Object.assign(new Error('Incident location coordinates are required for smart hospital matching.'), { statusCode: 400 });
+        }
+        const [guestLng, guestLat] = incident.location.coordinates;
+        const facilities = await RescueFacilityModel.find({
+            active: true,
+            availableForEmergency: true,
+            _id: { $nin: excludeFacilityIds.map(id => new Types.ObjectId(id)) }
+        }).lean().exec();
+        if (!facilities.length) {
+            throw Object.assign(new Error('No available emergency hospitals found at this time. Please try again or call 112.'), { statusCode: 404 });
+        }
+        const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
+            const R = 6371;
+            const dLat = (lat2 - lat1) * (Math.PI / 180);
+            const dLon = (lon2 - lon1) * (Math.PI / 180);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        };
+        const scored = facilities.map((fac) => {
+            const [facLng, facLat] = fac.location?.coordinates || [0, 0];
+            const distanceKm = calculateDistanceKm(guestLat, guestLng, facLat, facLng);
+            const estimatedEtaMinutes = Math.max(2, Math.round(distanceKm * 1.5));
+            let score = 100 - (distanceKm * 3);
+            if (fac.liveCapacity && fac.liveCapacity.diversionStatus) {
+                score -= 50;
+            }
+            if (fac.liveCapacity && (fac.liveCapacity.resusBaysAvailable > 0 || fac.liveCapacity.edBedsAvailable > 0)) {
+                score += 20;
+            }
+            return { facility: fac, distanceKm: Number(distanceKm.toFixed(2)), estimatedEtaMinutes, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        const bestMatch = scored[0];
+        if (!bestMatch)
+            throw Object.assign(new Error('No suitable hospital match found.'), { statusCode: 404 });
+        return {
+            matchedHospital: {
+                _id: bestMatch.facility._id,
+                name: bestMatch.facility.name,
+                address: bestMatch.facility.address,
+                facilityType: bestMatch.facility.facilityType,
+                emergencyContactPhone: bestMatch.facility.emergencyContactPhone,
+                capabilities: bestMatch.facility.capabilities,
+                liveCapacity: bestMatch.facility.liveCapacity,
+            },
+            distanceKm: bestMatch.distanceKm,
+            estimatedEtaMinutes: bestMatch.estimatedEtaMinutes,
+        };
+    }
     async matchSmartHospital(incidentId, excludeFacilityIds = []) {
         if (!Types.ObjectId.isValid(incidentId))
             throw Object.assign(new Error('Invalid incident ID.'), { statusCode: 400 });
