@@ -90,6 +90,15 @@ export class MedxRescueController {
     } catch (error) { sendError(res, error); }
   }
 
+  async matchSmartHospital(req: Request, res: Response): Promise<void> {
+    try {
+      const incidentId = String(req.params.id);
+      const excludeFacilityIds = Array.isArray(req.body?.excludeFacilityIds) ? req.body.excludeFacilityIds : [];
+      const data = await medxRescueService.matchSmartHospital(incidentId, excludeFacilityIds);
+      res.json({ success: true, data, message: 'Nearest available hospital matched successfully.' });
+    } catch (error) { sendError(res, error); }
+  }
+
   async getIncidentById(req: Request, res: Response): Promise<void> {
     if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD'])) return;
     try {

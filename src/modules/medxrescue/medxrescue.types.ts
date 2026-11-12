@@ -70,6 +70,10 @@ export interface IRescueFacility extends Document {
   operatingHours?: string;
   emergencyContactPhone: string;
   active: boolean;
+  availableForEmergency?: boolean;
+  availabilityMode?: '24_7' | 'CUSTOM';
+  customStartTime?: string;
+  customEndTime?: string;
   liveCapacity?: {
     resusBaysAvailable: number;
     edBedsAvailable: number;

@@ -87,6 +87,10 @@ const FacilitySchema = new Schema<IRescueFacility>({
   operatingHours: { type: String, trim: true, maxlength: 200 },
   emergencyContactPhone: { type: String, required: true, trim: true, maxlength: 40 },
   active: { type: Boolean, default: false, index: true },
+  availableForEmergency: { type: Boolean, default: true, index: true },
+  availabilityMode: { type: String, enum: ['24_7', 'CUSTOM'], default: '24_7' },
+  customStartTime: { type: String, default: '08:00' },
+  customEndTime: { type: String, default: '08:00' },
 }, { timestamps: true });
 FacilitySchema.index({ location: '2dsphere' });
 FacilitySchema.index({ ownerAccountId: 1, name: 1 }, { unique: true });
