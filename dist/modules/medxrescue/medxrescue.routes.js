@@ -55,6 +55,7 @@ router.post('/incidents/:id/clinical-handover', (req, res) => void medxRescueCon
 router.get('/facilities', (req, res) => void medxRescueController.listFacilities(req, res));
 router.post('/facilities', (req, res) => void medxRescueController.createFacility(req, res));
 router.patch('/facilities/:facilityId/active', (req, res) => void medxRescueController.setFacilityActive(req, res));
+router.patch('/facilities/:facilityId/availability', (req, res) => void medxRescueController.setFacilityEmergencyAvailability(req, res));
 router.get('/facilities/:facilityId/acceptances', (req, res) => void medxRescueController.listFacilityAcceptances(req, res));
 router.patch('/facilities/:facilityId/acceptances/:acceptanceId/respond', (req, res) => void medxRescueController.respondToFacilityAcceptance(req, res));
 router.get('/dispatch-offers', (req, res) => void medxRescueController.listOffers(req, res));

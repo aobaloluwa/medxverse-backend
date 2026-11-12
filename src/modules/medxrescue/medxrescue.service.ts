@@ -836,6 +836,61 @@ export class MedxRescueService {
     return facility;
   }
 
+  async setFacilityEmergencyAvailability(facilityId: string, input: Record<string, unknown>, actorId: string, accountId: string, platformAdmin = false) {
+    if (!Types.ObjectId.isValid(facilityId)) throw Object.assign(new Error('Invalid facility ID.'), { statusCode: 400 });
+    const facility = await RescueFacilityModel.findById(facilityId).exec();
+    if (!facility) throw Object.assign(new Error('Facility not found.'), { statusCode: 404 });
+    if (!platformAdmin && String(facility.ownerAccountId) !== accountId) {
+      throw Object.assign(new Error('You do not have permission to update this facility.'), { statusCode: 403 });
+    }
+
+    const availableForEmergency = input.availableForEmergency !== false;
+    const availabilityMode = input.availabilityMode === 'CUSTOM' ? 'CUSTOM' : '24_7';
+    const customStartTime = typeof input.customStartTime === 'string' ? input.customStartTime.slice(0, 10) : '08:00';
+    const customEndTime = typeof input.customEndTime === 'string' ? input.customEndTime.slice(0, 10) : '08:00';
+    const liveCapacity = input.liveCapacity && typeof input.liveCapacity === 'object' ? {
+      resusBaysAvailable: Number((input.liveCapacity as any).resusBaysAvailable) || 0,
+      edBedsAvailable: Number((input.liveCapacity as any).edBedsAvailable) || 0,
+      diversionStatus: Boolean((input.liveCapacity as any).diversionStatus),
+    } : facility.liveCapacity;
+
+    facility.availableForEmergency = availableForEmergency;
+    facility.availabilityMode = availabilityMode;
+    facility.customStartTime = customStartTime;
+    facility.customEndTime = customEndTime;
+    if (liveCapacity) facility.liveCapacity = liveCapacity;
+    await facility.save();
+
+    await audit({ actorType: 'STAFF', actorId, action: 'FACILITY_EMERGENCY_AVAILABILITY_UPDATED', metadata: { facilityId, availableForEmergency, availabilityMode } });
+    publishMedxRescueEvent({ type: 'facility.changed', facilityId, accountId: String(facility.ownerAccountId), reason: 'Emergency availability updated' });
+    return facility;
+  }
+
+  async setFacilityLocation(facilityId: string, latitude: number, longitude: number, address?: string, actorId?: string, accountId?: string, platformAdmin = false) {
+    if (!Types.ObjectId.isValid(facilityId)) throw Object.assign(new Error('Invalid facility ID.'), { statusCode: 400 });
+    const facility = await RescueFacilityModel.findById(facilityId).exec();
+    if (!facility) throw Object.assign(new Error('Facility not found.'), { statusCode: 404 });
+    if (!platformAdmin && String(facility.ownerAccountId) !== accountId) {
+      throw Object.assign(new Error('You do not have permission to update this facility.'), { statusCode: 403 });
+    }
+
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw Object.assign(new Error('Valid latitude and longitude coordinates are required.'), { statusCode: 400 });
+    }
+
+    facility.location = { type: 'Point', coordinates: [lng, lat] };
+    if (address && typeof address === 'string' && address.trim()) {
+      facility.address = address.trim().slice(0, 500);
+    }
+    await facility.save();
+
+    await audit({ actorType: 'STAFF', actorId: actorId && Types.ObjectId.isValid(actorId) ? actorId : undefined, action: 'FACILITY_LOCATION_UPDATED', metadata: { facilityId, latitude: lat, longitude: lng } });
+    publishMedxRescueEvent({ type: 'facility.changed', facilityId, accountId: String(facility.ownerAccountId), reason: 'Facility GPS location updated' });
+    return facility;
+  }
+
   async requestFacilityAcceptance(incidentId: string, facilityId: string, dispatcherId: string) {
     if (!Types.ObjectId.isValid(incidentId) || !Types.ObjectId.isValid(facilityId)) throw Object.assign(new Error('Invalid incident or facility ID.'), { statusCode: 400 });
     const [incident, facility] = await Promise.all([

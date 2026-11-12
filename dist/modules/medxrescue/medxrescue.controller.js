@@ -99,6 +99,19 @@ export class MedxRescueController {
             sendError(res, error);
         }
     }
+    async setFacilityEmergencyAvailability(req, res) {
+        try {
+            const facilityId = String(req.params.facilityId);
+            const actId = actorId(req);
+            const accId = accountIdOf(req);
+            const isPlatformAdmin = platformAdmin(req);
+            const data = await medxRescueService.setFacilityEmergencyAvailability(facilityId, req.body || {}, actId, accId, isPlatformAdmin);
+            res.json({ success: true, data, message: 'Hospital emergency availability updated successfully.' });
+        }
+        catch (error) {
+            sendError(res, error);
+        }
+    }
     async getIncidentById(req, res) {
         if (!requireStaffRole(req, res, ['ADMIN', 'SYSTEM_ADMIN', 'HOSPITAL_ADMIN', 'DISPATCHER', 'EMERGENCY_DISPATCHER', 'CLINICAL_LEAD']))
             return;
