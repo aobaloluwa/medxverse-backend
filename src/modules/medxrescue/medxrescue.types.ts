@@ -1,6 +1,7 @@
 import { Document, Types } from 'mongoose';
 
 export enum IncidentStatus {
+  PENDING_CONFIRMATION = 'PENDING_CONFIRMATION',
   REQUEST_RECEIVED = 'REQUEST_RECEIVED',
   DISPATCH_REVIEW = 'DISPATCH_REVIEW',
   OFFERED_TO_CREW = 'OFFERED_TO_CREW',

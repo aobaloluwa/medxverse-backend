@@ -88,7 +88,7 @@ export class MedxRescueService {
     let incident: any;
     try {
       incident = await RescueIncidentModel.create({
-        publicReference: makeReference(), status: IncidentStatus.REQUEST_RECEIVED,
+        publicReference: makeReference(), status: IncidentStatus.PENDING_CONFIRMATION,
         priority: IncidentPriority.UNTRIAGED,
         intakeChannel,
         callerName,
@@ -98,7 +98,7 @@ export class MedxRescueService {
         patientUserId: patientUserId && Types.ObjectId.isValid(patientUserId) ? new Types.ObjectId(patientUserId) : undefined,
         guestTokenHash: sha256(token), guestTokenExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         idempotencyKey, idempotencyFingerprint: fingerprint,
-        events: [{ status: IncidentStatus.REQUEST_RECEIVED, at: new Date(), actorType: 'GUEST', note: 'Emergency request received; dispatcher review is required.' }],
+        events: [{ status: IncidentStatus.PENDING_CONFIRMATION, at: new Date(), actorType: 'GUEST', note: 'Emergency request initiated; awaiting hospital match confirmation by guest.' }],
       });
     } catch (error) {
       if ((error as { code?: number })?.code === 11000) {
@@ -110,17 +110,13 @@ export class MedxRescueService {
       }
       throw error;
     }
-    await audit({ incidentId: incident._id, actorType: 'GUEST', action: 'INCIDENT_CREATED', metadata: { intakeChannel: incident.intakeChannel } });
-    publishMedxRescueEvent({ type: 'incident.created', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, triageSuggestedUrgency: incident.triageSuggestedUrgency });
-    if (incident.triageSuggestedUrgency === 'IMMEDIATE') {
-      await audit({ incidentId: incident._id, actorType: 'SYSTEM', action: 'TRIAGE_RED_FLAG_REQUIRES_REVIEW', metadata: { suggestedUrgency: incident.triageSuggestedUrgency } });
-      publishMedxRescueEvent({ type: 'incident.escalation.required', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, reason: 'A configured triage red-flag answer requires immediate dispatcher review.' });
-    }
+    await audit({ incidentId: incident._id, actorType: 'GUEST', action: 'INCIDENT_CREATED_PENDING_CONFIRMATION', metadata: { intakeChannel: incident.intakeChannel } });
     return { incident: this.publicIncident(incident), accessToken: token, reused: false };
   }
 
   private publicIncident(incident: any) {
     const publicStatusMessage: Record<IncidentStatus, string> = {
+      [IncidentStatus.PENDING_CONFIRMATION]: 'Awaiting hospital match confirmation by guest.',
       [IncidentStatus.REQUEST_RECEIVED]: 'Your request has been received. A human dispatcher must review it.',
       [IncidentStatus.DISPATCH_REVIEW]: 'A dispatcher is reviewing your request.',
       [IncidentStatus.OFFERED_TO_CREW]: 'Eligible providers have been offered the request. Crew acceptance is pending.',
@@ -266,17 +262,17 @@ export class MedxRescueService {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 30));
     const filter: Record<string, unknown> = {};
-    if (query.status && Object.values(IncidentStatus).includes(query.status as IncidentStatus)) filter.status = query.status;
+    if (query.status && Object.values(IncidentStatus).includes(query.status as IncidentStatus)) {
+      filter.status = query.status;
+    } else {
+      filter.status = { $ne: IncidentStatus.PENDING_CONFIRMATION };
+    }
     if (hospitalAccountId !== undefined) {
       if (!Types.ObjectId.isValid(hospitalAccountId)) throw Object.assign(new Error('Hospital account context is missing.'), { statusCode: 403 });
       const facilities = await RescueFacilityModel.find({ ownerAccountId: new Types.ObjectId(hospitalAccountId) }).select('_id').lean().exec();
       const facilityIds = facilities.map((facility) => facility._id);
-      // Include unassigned incoming emergency SOS requests AND requests assigned to this hospital
-      filter.$or = [
-        { destinationFacilityId: { $in: facilityIds } },
-        { destinationFacilityId: { $exists: false } },
-        { destinationFacilityId: null },
-      ];
+      // Hospital queues show ONLY incidents assigned specifically to their facility after guest confirmation
+      filter.destinationFacilityId = { $in: facilityIds };
     }
     const [incidents, total] = await Promise.all([
       RescueIncidentModel.aggregate([
@@ -2046,7 +2042,14 @@ export class MedxRescueService {
     const bestMatch = scored[0];
     if (!bestMatch) throw Object.assign(new Error('No suitable hospital match found.'), { statusCode: 404 });
 
+    incident.status = IncidentStatus.REQUEST_RECEIVED;
     incident.destinationFacilityId = bestMatch.facility._id;
+    incident.events.push({
+      status: IncidentStatus.REQUEST_RECEIVED,
+      at: new Date(),
+      actorType: 'GUEST',
+      note: `Hospital match confirmed by guest: ${bestMatch.facility.name}. Forwarded to HMS dispatch queue.`
+    });
     await incident.save();
 
     const acceptance = await RescueFacilityAcceptanceModel.create({
@@ -2059,10 +2062,11 @@ export class MedxRescueService {
 
     await audit({
       incidentId: incident._id,
-      actorType: 'SYSTEM',
-      action: 'SMART_HOSPITAL_MATCHED',
+      actorType: 'GUEST',
+      action: 'SMART_HOSPITAL_MATCH_CONFIRMED',
       metadata: { facilityId: bestMatch.facility._id, distanceKm: bestMatch.distanceKm, eta: bestMatch.estimatedEtaMinutes }
     });
+    publishMedxRescueEvent({ type: 'incident.created', incidentId: String(incident._id), incidentReference: incident.publicReference, status: incident.status, facilityId: String(bestMatch.facility._id) });
 
     return {
       matchedHospital: {

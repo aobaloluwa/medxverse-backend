@@ -1,5 +1,6 @@
 export var IncidentStatus;
 (function (IncidentStatus) {
+    IncidentStatus["PENDING_CONFIRMATION"] = "PENDING_CONFIRMATION";
     IncidentStatus["REQUEST_RECEIVED"] = "REQUEST_RECEIVED";
     IncidentStatus["DISPATCH_REVIEW"] = "DISPATCH_REVIEW";
     IncidentStatus["OFFERED_TO_CREW"] = "OFFERED_TO_CREW";
