@@ -42,6 +42,7 @@ import clinicalSpecialtyRoutes from '../modules/clinical-specialties/clinical-sp
 import nursingRoutes from '../modules/nursing/nursing.routes.js';
 import diagnosticsSupportRoutes from '../modules/diagnostics-support/diagnostics-support.routes.js';
 import supplyChainRoutes from '../modules/supply-chain/supply-chain.routes.js';
+import hrRoutes from '../modules/hr/hr.routes.js';
 
 // hmo portal
 import hmsDashboardRoutes from '../modules/hms-dashboard/hms-dashboard.routes.js';
@@ -108,6 +109,7 @@ v1Router.use('/clinical-specialties', clinicalSpecialtyRoutes);
 v1Router.use('/nursing', nursingRoutes);
 v1Router.use('/diagnostics-support', diagnosticsSupportRoutes);
 v1Router.use('/supply-chain', supplyChainRoutes);
+v1Router.use('/hr', hrRoutes);
 
 // hmo portal
 v1Router.use('/hms-dashboard', hmsDashboardRoutes);
