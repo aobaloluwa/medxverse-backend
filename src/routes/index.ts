@@ -40,6 +40,7 @@ import referralRoutes from '../modules/referrals/referrals.routes.js';
 import visitorRoutes from '../modules/visitor/visitor.routes.js';
 import clinicalSpecialtyRoutes from '../modules/clinical-specialties/clinical-specialty.routes.js';
 import nursingRoutes from '../modules/nursing/nursing.routes.js';
+import diagnosticsSupportRoutes from '../modules/diagnostics-support/diagnostics-support.routes.js';
 
 // hmo portal
 import hmsDashboardRoutes from '../modules/hms-dashboard/hms-dashboard.routes.js';
@@ -104,6 +105,7 @@ v1Router.use('/referrals', referralRoutes);
 v1Router.use('/visitors', visitorRoutes);
 v1Router.use('/clinical-specialties', clinicalSpecialtyRoutes);
 v1Router.use('/nursing', nursingRoutes);
+v1Router.use('/diagnostics-support', diagnosticsSupportRoutes);
 
 // hmo portal
 v1Router.use('/hms-dashboard', hmsDashboardRoutes);
