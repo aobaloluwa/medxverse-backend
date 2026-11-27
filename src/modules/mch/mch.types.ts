@@ -4,6 +4,7 @@ export enum MchCareType {
   ANTENATAL = 'ANTENATAL',
   POSTNATAL = 'POSTNATAL',
   CHILD_HEALTH = 'CHILD_HEALTH',
+  FAMILY_PLANNING = 'FAMILY_PLANNING',
 }
 
 export enum PregnancyStatus {
@@ -24,6 +25,18 @@ export enum DeliveryOutcome {
   LIVE_BIRTH = 'LIVE_BIRTH',
   STILL_BIRTH = 'STILL_BIRTH',
   NEONATAL_DEATH = 'NEONATAL_DEATH',
+}
+
+export enum FamilyPlanningMethod {
+  ORAL_PILLS = 'ORAL_PILLS',
+  INJECTABLE_DEPO = 'INJECTABLE_DEPO',
+  IUD_COPPER = 'IUD_COPPER',
+  IUD_HORMONAL = 'IUD_HORMONAL',
+  IMPLANT_NORPLANT = 'IMPLANT_NORPLANT',
+  CONDOMS = 'CONDOMS',
+  TUBAL_LIGATION = 'TUBAL_LIGATION',
+  VASECTOMY = 'VASECTOMY',
+  OTHER = 'OTHER',
 }
 
 export interface IAncVisit {
@@ -77,6 +90,37 @@ export interface IDeliveryRecord {
   notes?: string;
 }
 
+export interface IFamilyPlanningRecord {
+  method: FamilyPlanningMethod;
+  initiatedAt: Date;
+  nextDueDate?: Date;
+  sideEffects?: string;
+  status: 'ACTIVE' | 'DISCONTINUED' | 'COMPLETED';
+  notes?: string;
+  administeredBy: Types.ObjectId;
+}
+
+export interface IPartographLog {
+  recordedAt: Date;
+  cervicalDilationCm: number;
+  contractionFrequency: string;
+  fetalHeartRateBpm: number;
+  amnioticFluid?: string;
+  maternalBp?: string;
+  notes?: string;
+  recordedBy: Types.ObjectId;
+}
+
+export interface IChildGrowthLog {
+  recordedAt: Date;
+  weightKg: number;
+  heightCm?: number;
+  headCircumferenceCm?: number;
+  muacCm?: number;
+  milestonesNotes?: string;
+  recordedBy: Types.ObjectId;
+}
+
 export interface IMchRecord {
   hospitalId: Types.ObjectId;
   patientId: Types.ObjectId;
@@ -89,6 +133,9 @@ export interface IMchRecord {
   ancVisits?: IAncVisit[];
   pncVisits?: IPncVisit[];
   immunizations?: IImmunizationRecord[];
+  familyPlanningRecords?: IFamilyPlanningRecord[];
+  partographLogs?: IPartographLog[];
+  growthLogs?: IChildGrowthLog[];
   deliveryRecord?: IDeliveryRecord;
   isActive: boolean;
 }
@@ -142,6 +189,33 @@ export interface AddImmunizationInput {
   batchNumber?: string;
   nextDueDate?: Date;
   notes?: string;
+}
+
+export interface AddFamilyPlanningInput {
+  method: FamilyPlanningMethod;
+  nextDueDate?: Date;
+  sideEffects?: string;
+  notes?: string;
+  administeredBy: string;
+}
+
+export interface AddPartographInput {
+  cervicalDilationCm: number;
+  contractionFrequency: string;
+  fetalHeartRateBpm: number;
+  amnioticFluid?: string;
+  maternalBp?: string;
+  notes?: string;
+  recordedBy: string;
+}
+
+export interface AddChildGrowthInput {
+  weightKg: number;
+  heightCm?: number;
+  headCircumferenceCm?: number;
+  muacCm?: number;
+  milestonesNotes?: string;
+  recordedBy: string;
 }
 
 export interface GetMchRecordsQuery {

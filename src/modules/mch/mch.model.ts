@@ -5,6 +5,7 @@ import {
   PregnancyStatus,
   DeliveryType,
   DeliveryOutcome,
+  FamilyPlanningMethod,
 } from './mch.types.js';
 
 const AncVisitSchema = new Schema(
@@ -78,6 +79,46 @@ const DeliveryRecordSchema = new Schema(
   { _id: false }
 );
 
+const FamilyPlanningSchema = new Schema(
+  {
+    method: { type: String, enum: Object.values(FamilyPlanningMethod), required: true },
+    initiatedAt: { type: Date, default: Date.now, required: true },
+    nextDueDate: { type: Date },
+    sideEffects: { type: String, trim: true },
+    status: { type: String, enum: ['ACTIVE', 'DISCONTINUED', 'COMPLETED'], default: 'ACTIVE' },
+    notes: { type: String, trim: true },
+    administeredBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: true }
+);
+
+const PartographLogSchema = new Schema(
+  {
+    recordedAt: { type: Date, default: Date.now, required: true },
+    cervicalDilationCm: { type: Number, required: true },
+    contractionFrequency: { type: String, required: true, trim: true },
+    fetalHeartRateBpm: { type: Number, required: true },
+    amnioticFluid: { type: String, trim: true },
+    maternalBp: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: true }
+);
+
+const ChildGrowthSchema = new Schema(
+  {
+    recordedAt: { type: Date, default: Date.now, required: true },
+    weightKg: { type: Number, required: true },
+    heightCm: { type: Number },
+    headCircumferenceCm: { type: Number },
+    muacCm: { type: Number },
+    milestonesNotes: { type: String, trim: true },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: true }
+);
+
 const MchRecordSchema = new Schema<IMchRecordDocument>(
   {
     hospitalId: { type: Schema.Types.ObjectId, ref: 'Account', required: true, index: true },
@@ -101,6 +142,9 @@ const MchRecordSchema = new Schema<IMchRecordDocument>(
     ancVisits: [AncVisitSchema],
     pncVisits: [PncVisitSchema],
     immunizations: [ImmunizationSchema],
+    familyPlanningRecords: [FamilyPlanningSchema],
+    partographLogs: [PartographLogSchema],
+    growthLogs: [ChildGrowthSchema],
     deliveryRecord: { type: DeliveryRecordSchema },
     isActive: { type: Boolean, default: true, index: true },
   },

@@ -7,6 +7,9 @@ import {
   AddAncVisitInput,
   RecordDeliveryInput,
   AddImmunizationInput,
+  AddFamilyPlanningInput,
+  AddPartographInput,
+  AddChildGrowthInput,
   PregnancyStatus,
 } from './mch.types.js';
 
@@ -40,6 +43,9 @@ export class MchService {
         .populate('pncVisits.attendingStaffId', 'firstName lastName role')
         .populate('immunizations.administeredBy', 'firstName lastName role')
         .populate('deliveryRecord.deliveredBy', 'firstName lastName role')
+        .populate('familyPlanningRecords.administeredBy', 'firstName lastName role')
+        .populate('partographLogs.recordedBy', 'firstName lastName role')
+        .populate('growthLogs.recordedBy', 'firstName lastName role')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -62,6 +68,9 @@ export class MchService {
       .populate('pncVisits.attendingStaffId', 'firstName lastName role')
       .populate('immunizations.administeredBy', 'firstName lastName role')
       .populate('deliveryRecord.deliveredBy', 'firstName lastName role')
+      .populate('familyPlanningRecords.administeredBy', 'firstName lastName role')
+      .populate('partographLogs.recordedBy', 'firstName lastName role')
+      .populate('growthLogs.recordedBy', 'firstName lastName role')
       .exec();
   }
 
@@ -123,6 +132,91 @@ export class MchService {
       { $push: { immunizations: immunizationEntry } },
       { new: true }
     ).exec();
+  }
+
+  public async addFamilyPlanning(
+    recordId: string,
+    hospitalId: string,
+    input: AddFamilyPlanningInput
+  ): Promise<IMchRecordDocument | null> {
+    const fpEntry = {
+      ...input,
+      initiatedAt: new Date(),
+      status: 'ACTIVE',
+      administeredBy: new Types.ObjectId(input.administeredBy),
+      nextDueDate: input.nextDueDate ? new Date(input.nextDueDate) : undefined,
+    };
+
+    return MchRecordModel.findOneAndUpdate(
+      { _id: recordId, hospitalId, isActive: true },
+      { $push: { familyPlanningRecords: fpEntry } },
+      { new: true }
+    ).exec();
+  }
+
+  public async addPartograph(
+    recordId: string,
+    hospitalId: string,
+    input: AddPartographInput
+  ): Promise<IMchRecordDocument | null> {
+    const partographEntry = {
+      ...input,
+      recordedAt: new Date(),
+      recordedBy: new Types.ObjectId(input.recordedBy),
+    };
+
+    return MchRecordModel.findOneAndUpdate(
+      { _id: recordId, hospitalId, isActive: true },
+      { $push: { partographLogs: partographEntry } },
+      { new: true }
+    ).exec();
+  }
+
+  public async addChildGrowth(
+    recordId: string,
+    hospitalId: string,
+    input: AddChildGrowthInput
+  ): Promise<IMchRecordDocument | null> {
+    const growthEntry = {
+      ...input,
+      recordedAt: new Date(),
+      recordedBy: new Types.ObjectId(input.recordedBy),
+    };
+
+    return MchRecordModel.findOneAndUpdate(
+      { _id: recordId, hospitalId, isActive: true },
+      { $push: { growthLogs: growthEntry } },
+      { new: true }
+    ).exec();
+  }
+
+  public async getMchStats(hospitalId: string): Promise<{
+    ancActive: number;
+    deliveriesCount: number;
+    familyPlanningActive: number;
+    immunizationDosesGiven: number;
+  }> {
+    const [ancActive, deliveriesCount, fpRecords, immunizations] = await Promise.all([
+      MchRecordModel.countDocuments({ hospitalId, careType: 'ANTENATAL', pregnancyStatus: PregnancyStatus.ACTIVE, isActive: true }),
+      MchRecordModel.countDocuments({ hospitalId, deliveryRecord: { $exists: true }, isActive: true }),
+      MchRecordModel.aggregate([
+        { $match: { hospitalId: new Types.ObjectId(hospitalId), isActive: true } },
+        { $unwind: '$familyPlanningRecords' },
+        { $count: 'total' },
+      ]),
+      MchRecordModel.aggregate([
+        { $match: { hospitalId: new Types.ObjectId(hospitalId), isActive: true } },
+        { $unwind: '$immunizations' },
+        { $count: 'total' },
+      ]),
+    ]);
+
+    return {
+      ancActive,
+      deliveriesCount,
+      familyPlanningActive: fpRecords[0]?.total || 0,
+      immunizationDosesGiven: immunizations[0]?.total || 0,
+    };
   }
 }
 
