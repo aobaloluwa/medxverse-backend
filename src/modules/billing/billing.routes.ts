@@ -136,4 +136,19 @@ router.post(
   controller.createPaymentPlan
 );
 
+/* =========================================================
+   FINANCE, EXPENSES & PAYROLL
+========================================================= */
+
+router.get('/expenses', controller.getExpenses);
+router.post('/expenses', controller.createExpense);
+
+router.get('/payroll', controller.getPayroll);
+router.post('/payroll', controller.createPayroll);
+
+router.get('/waivers', controller.getWaivers);
+router.post('/waivers', controller.createWaiver);
+
+router.get('/finance-summary', controller.getFinanceSummary);
+
 export default router;

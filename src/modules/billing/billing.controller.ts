@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 
 import * as BillingService from './billing.service.js';
+import { financeService } from './finance.service.js';
 
 const userId = (req: Request) => {
   const user = (req as any).user;
@@ -469,6 +470,84 @@ export const createPaymentPlan = async (
         createdBy: req.body?.createdBy || userId(req),
       }),
     });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+/* =========================================================
+   FINANCE, EXPENSES & PAYROLL
+========================================================= */
+
+export const createExpense = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.createExpense({
+      ...req.body,
+      hospitalId: hospitalId(req),
+      requestedBy: userId(req),
+    });
+    return res.status(201).json({ success: true, message: 'Expense voucher logged.', data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getExpenses = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.getExpenses(hospitalId(req));
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const createPayroll = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.createPayroll({
+      ...req.body,
+      hospitalId: hospitalId(req),
+    });
+    return res.status(201).json({ success: true, message: 'Payroll record created.', data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getPayroll = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.getPayroll(hospitalId(req), req.query.monthYear as string);
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const createWaiver = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.createWaiverOrDeposit({
+      ...req.body,
+      hospitalId: hospitalId(req),
+      requestedBy: userId(req),
+    });
+    return res.status(201).json({ success: true, message: 'Deposit/Waiver created.', data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getWaivers = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.getWaivers(hospitalId(req));
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getFinanceSummary = async (req: Request, res: Response) => {
+  try {
+    const data = await financeService.getFinanceSummary(hospitalId(req));
+    return res.json({ success: true, data });
   } catch (error) {
     return fail(res, error);
   }
