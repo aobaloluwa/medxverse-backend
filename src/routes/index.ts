@@ -44,6 +44,7 @@ import diagnosticsSupportRoutes from '../modules/diagnostics-support/diagnostics
 import supplyChainRoutes from '../modules/supply-chain/supply-chain.routes.js';
 import hrRoutes from '../modules/hr/hr.routes.js';
 import qualityComplianceRoutes from '../modules/quality-compliance/quality-compliance.routes.js';
+import systemReportsRoutes from '../modules/system-reports/system-reports.routes.js';
 
 // hmo portal
 import hmsDashboardRoutes from '../modules/hms-dashboard/hms-dashboard.routes.js';
@@ -112,6 +113,7 @@ v1Router.use('/diagnostics-support', diagnosticsSupportRoutes);
 v1Router.use('/supply-chain', supplyChainRoutes);
 v1Router.use('/hr', hrRoutes);
 v1Router.use('/quality-compliance', qualityComplianceRoutes);
+v1Router.use('/system-reports', systemReportsRoutes);
 
 // hmo portal
 v1Router.use('/hms-dashboard', hmsDashboardRoutes);
