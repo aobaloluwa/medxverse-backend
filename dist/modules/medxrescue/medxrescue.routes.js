@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../middlewares/auth.middleware.js';
 import { apiLimiter } from '../../middlewares/rateLimiter.middleware.js';
+import { cacheMiddleware } from '../../middlewares/cache.middleware.js';
 import { medxRescueController } from './medxrescue.controller.js';
 const router = Router();
 // Public guest access: no patient account, patient ID, or login is required.
@@ -14,7 +15,7 @@ router.post('/incidents/public/:reference/family-link', apiLimiter, (req, res) =
 router.get('/patient/active-emergency', (req, res) => void medxRescueController.getPatientActiveEmergency(req, res));
 // Provider applications & crew auth are public
 router.post('/providers/apply', apiLimiter, (req, res) => void medxRescueController.submitProvider(req, res));
-router.get('/auth/hospitals', apiLimiter, (req, res) => void medxRescueController.listHospitals(req, res));
+router.get('/auth/hospitals', apiLimiter, cacheMiddleware(60), (req, res) => void medxRescueController.listHospitals(req, res));
 router.post('/auth/register', apiLimiter, (req, res) => void medxRescueController.registerCrew(req, res));
 router.post('/auth/login', apiLimiter, (req, res) => void medxRescueController.loginCrew(req, res));
 // All operational/clinical actions require authenticated, role-checked staff.
@@ -37,7 +38,7 @@ router.get('/incidents/:id/fhir', (req, res) => void medxRescueController.getFHI
 router.get('/incidents/:id/matching-candidates', (req, res) => void medxRescueController.getMatchingCandidates(req, res));
 router.post('/incidents/:id/team-activations', (req, res) => void medxRescueController.activateHospitalTeam(req, res));
 router.get('/incidents/:id/team-activations', (req, res) => void medxRescueController.getHospitalTeamActivations(req, res));
-router.get('/providers', (req, res) => void medxRescueController.listProviders(req, res));
+router.get('/providers', cacheMiddleware(60), (req, res) => void medxRescueController.listProviders(req, res));
 router.get('/providers/review-queue', (req, res) => void medxRescueController.listProvidersForReview(req, res));
 router.patch('/providers/:providerId/review', (req, res) => void medxRescueController.reviewProvider(req, res));
 router.post('/providers/:providerId/members', (req, res) => void medxRescueController.linkProviderMember(req, res));
@@ -53,18 +54,18 @@ router.get('/dispatch/eligible-vehicles', (req, res) => void medxRescueControlle
 router.post('/incidents/:id/dispatch-offers', (req, res) => void medxRescueController.createDispatchOffer(req, res));
 router.post('/incidents/:id/facility-acceptance-requests', (req, res) => void medxRescueController.requestFacilityAcceptance(req, res));
 router.post('/incidents/:id/clinical-handover', (req, res) => void medxRescueController.createClinicalHandover(req, res));
-router.get('/facilities', (req, res) => void medxRescueController.listFacilities(req, res));
+router.get('/facilities', cacheMiddleware(60), (req, res) => void medxRescueController.listFacilities(req, res));
 router.post('/facilities', (req, res) => void medxRescueController.createFacility(req, res));
 router.patch('/facilities/my/availability', (req, res) => void medxRescueController.setMyFacilityEmergencyAvailability(req, res));
 router.patch('/facilities/my/location', (req, res) => void medxRescueController.setMyFacilityLocation(req, res));
 router.patch('/facilities/:facilityId/active', (req, res) => void medxRescueController.setFacilityActive(req, res));
 router.patch('/facilities/:facilityId/availability', (req, res) => void medxRescueController.setFacilityEmergencyAvailability(req, res));
 router.patch('/facilities/:facilityId/location', (req, res) => void medxRescueController.setFacilityLocation(req, res));
-router.get('/facilities/:facilityId/acceptances', (req, res) => void medxRescueController.listFacilityAcceptances(req, res));
+router.get('/facilities/:facilityId/acceptances', cacheMiddleware(15), (req, res) => void medxRescueController.listFacilityAcceptances(req, res));
 router.patch('/facilities/:facilityId/acceptances/:acceptanceId/respond', (req, res) => void medxRescueController.respondToFacilityAcceptance(req, res));
-router.get('/dispatch-offers', (req, res) => void medxRescueController.listOffers(req, res));
-router.get('/dispatch-offers/history', (req, res) => void medxRescueController.listHospitalOfferHistory(req, res));
+router.get('/dispatch-offers', cacheMiddleware(15), (req, res) => void medxRescueController.listOffers(req, res));
+router.get('/dispatch-offers/history', cacheMiddleware(60), (req, res) => void medxRescueController.listHospitalOfferHistory(req, res));
 router.post('/dispatch-offers/:offerId/respond', (req, res) => void medxRescueController.respondToOffer(req, res));
-router.get('/fleet/live', (req, res) => void medxRescueController.listLiveFleet(req, res));
+router.get('/fleet/live', cacheMiddleware(15), (req, res) => void medxRescueController.listLiveFleet(req, res));
 router.post('/fleet/seed-demo', (req, res) => void medxRescueController.seedDemoFleet(req, res));
 export default router;

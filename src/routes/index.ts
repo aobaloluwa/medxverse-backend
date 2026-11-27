@@ -36,6 +36,8 @@ import patientPortalRoutes from '../modules/patient-portal/patient-portal.routes
 import icuRoutes from '../modules/icu/icu.routes.js';
 import globalSearchRoutes from '../modules/global-search/global-search.routes.js';
 import medxRescueRoutes from '../modules/medxrescue/medxrescue.routes.js';
+import referralRoutes from '../modules/referrals/referrals.routes.js';
+import visitorRoutes from '../modules/visitor/visitor.routes.js';
 
 // hmo portal
 import hmsDashboardRoutes from '../modules/hms-dashboard/hms-dashboard.routes.js';
@@ -96,6 +98,8 @@ v1Router.use('/inventory', inventoryRoutes);
 v1Router.use('/administration', administrationRoutes);
 v1Router.use('/telemedicine', telemedicineRoutes);
 v1Router.use('/icu', icuRoutes);
+v1Router.use('/referrals', referralRoutes);
+v1Router.use('/visitors', visitorRoutes);
 
 // hmo portal
 v1Router.use('/hms-dashboard', hmsDashboardRoutes);
